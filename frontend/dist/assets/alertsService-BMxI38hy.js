@@ -1,0 +1,1 @@
+import{d as s}from"./index-BLCU077i.js";import{i as r,g as c,s as o}from"./cache-D8NwdMZK.js";const e="alerts:list",d={async list(){const a=c(e);if(a)return a;const t=await s("/alerts",{method:"GET"});return o(e,t,15e3),t},async remove(a){const t=await s(`/alerts/${a}`,{method:"DELETE"});return r([e]),t}};export{d as a};

@@ -1,0 +1,1 @@
+const n=new Map;function r(t){const e=n.get(t);return e?Date.now()>e.expiresAt?(n.delete(t),null):e.value:null}function s(t,e,a=3e4){n.set(t,{value:e,expiresAt:Date.now()+a})}function u(t){t.forEach(e=>n.delete(e))}export{r as g,u as i,s};

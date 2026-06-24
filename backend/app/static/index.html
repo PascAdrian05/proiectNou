@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Security Monitor Platform</title>
+  <style>
+    :root {
+      --bg: #f2f7f4;
+      --surface: #ffffff;
+      --ink: #132a22;
+      --accent: #1f7a58;
+      --accent-2: #be123c;
+      --muted: #617a71;
+      --line: #dce8e2;
+    }
+    body { margin: 0; font-family: "Segoe UI", sans-serif; color: var(--ink); background: linear-gradient(180deg, #edf7f1 0%, #f2f7f4 35%, #e8f0eb 100%); }
+    .layout { max-width: 1200px; margin: 24px auto; padding: 0 16px; display: grid; gap: 16px; }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 10px 24px rgba(31, 122, 88, 0.08); padding: 16px; }
+    h1, h2 { margin: 0 0 10px 0; }
+    .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+    .grid-two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 900px) { .grid-two { grid-template-columns: 1fr; } }
+    input, select, button { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #ccdbd2; box-sizing: border-box; }
+    button { border: none; background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
+    .danger { background: var(--accent-2); }
+    .ghost { background: #eef6f1; color: #1f5d49; }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; background: #0f1f1a; color: #def5ea; border-radius: 12px; padding: 12px; min-height: 150px; }
+    .muted { color: var(--muted); font-size: 14px; }
+    .pill { display: inline-block; background: #e8f5ee; color: #0e5c3f; border-radius: 999px; padding: 4px 10px; font-size: 12px; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div class="card">
+      <h1>Security Monitor Platform</h1>
+      <div class="muted">Tenant security dashboard for auth, billing, websites, scans, findings and alerts.</div>
+      <div style="margin-top:8px;"><span id="sessionState" class="pill">No session</span></div>
+    </div>
+
+    <div class="grid-two">
+      <div class="card">
+        <h2>Identity</h2>
+        <div class="row">
+          <input id="tenantName" placeholder="Tenant name" value="Acme Security" />
+          <input id="regEmail" placeholder="Register email" value="owner@example.com" />
+          <input id="regPass" type="password" placeholder="Password" value="StrongPass123!" />
+          <input id="loginEmail" placeholder="Login email" value="owner@example.com" />
+          <input id="loginPass" type="password" placeholder="Login password" value="StrongPass123!" />
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <button onclick="registerUser()">Create Account</button>
+          <button onclick="loginUser()">Login</button>
+          <button class="ghost" onclick="refreshSession()">Refresh Session</button>
+          <button class="danger" onclick="logoutUser()">Logout</button>
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <button class="ghost" onclick="startOauth('google')">Connect Google</button>
+          <button class="ghost" onclick="startOauth('facebook')">Connect Facebook</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Billing</h2>
+        <div class="row">
+          <select id="planSelect">
+            <option value="basic">Basic</option>
+            <option value="pro">Pro</option>
+          </select>
+          <button onclick="getSubscription()">Subscription Status</button>
+          <button onclick="startCheckout()">Open Stripe Checkout</button>
+          <button class="ghost" onclick="openBillingPortal()">Open Billing Portal</button>
+        </div>
+        <p class="muted" style="margin-top:10px;">Configure Stripe price IDs in backend env before checkout.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Monitoring</h2>
+      <div class="row">
+        <input id="siteDomain" placeholder="Domain" value="example.com" />
+        <input id="siteUrl" placeholder="URL" value="https://example.com" />
+        <input id="tenantAlertEmail" placeholder="Alert email (optional)" />
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button onclick="saveTenantSettings()">Save Alert Settings</button>
+        <button onclick="createWebsite()">Create Website</button>
+        <button onclick="enqueueScan()">Run Scan</button>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button class="ghost" onclick="loadWebsites()">List Websites</button>
+        <button class="ghost" onclick="loadScans()">List Scan Runs</button>
+        <button class="ghost" onclick="loadFindings()">List Findings</button>
+        <button class="ghost" onclick="loadAlerts()">List Alerts</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Output</h2>
+      <pre id="output"></pre>
+    </div>
+  </div>
+
+  <script>
+    const api = "/api/v1";
+
+    function accessToken() {
+      return localStorage.getItem("access_token") || "";
+    }
+
+    function refreshToken() {
+      return localStorage.getItem("refresh_token") || "";
+    }
+
+    function updateSessionState() {
+      const el = document.getElementById("sessionState");
+      if (accessToken()) {
+        el.textContent = "Session active";
+        el.style.background = "#dcfce7";
+        el.style.color = "#166534";
+      } else {
+        el.textContent = "No session";
+        el.style.background = "#fee2e2";
+        el.style.color = "#991b1b";
+      }
+    }
+
+    function show(data) {
+      document.getElementById("output").textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    }
+
+    async function request(path, options = {}) {
+      const headers = options.headers || {};
+      if (accessToken()) headers.Authorization = `Bearer ${accessToken()}`;
+      headers["Content-Type"] = headers["Content-Type"] || "application/json";
+      const res = await fetch(`${api}${path}`, { ...options, headers });
+      const contentType = res.headers.get("content-type") || "";
+      const data = contentType.includes("application/json") ? await res.json() : await res.text();
+      if (!res.ok) throw new Error(JSON.stringify(data));
+      return data;
+    }
+
+    async function registerUser() {
+      const payload = {
+        tenant_name: document.getElementById("tenantName").value,
+        email: document.getElementById("regEmail").value,
+        password: document.getElementById("regPass").value
+      };
+      try {
+        const data = await request("/auth/register", { method: "POST", body: JSON.stringify(payload) });
+        localStorage.setItem("access_token", data.access_token);
+        if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
+        updateSessionState();
+        show(data);
+      } catch (e) { show(String(e)); }
+    }
+
+    async function loginUser() {
+      const body = new URLSearchParams();
+      body.append("username", document.getElementById("loginEmail").value);
+      body.append("password", document.getElementById("loginPass").value);
+      try {
+        const res = await fetch(`${api}/auth/login`, { method: "POST", body, headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+        const data = await res.json();
+        if (!res.ok) throw new Error(JSON.stringify(data));
+        localStorage.setItem("access_token", data.access_token);
+        if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
+        updateSessionState();
+        show(data);
+      } catch (e) { show(String(e)); }
+    }
+
+    async function refreshSession() {
+      try {
+        if (!refreshToken()) throw new Error("No refresh token in session.");
+        const data = await request("/auth/refresh", {
+          method: "POST",
+          body: JSON.stringify({ refresh_token: refreshToken() })
+        });
+        localStorage.setItem("access_token", data.access_token);
+        if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
+        updateSessionState();
+        show(data);
+      } catch (e) { show(String(e)); }
+    }
+
+    async function logoutUser() {
+      try {
+        if (refreshToken()) {
+          await request("/auth/logout", {
+            method: "POST",
+            body: JSON.stringify({ refresh_token: refreshToken() })
+          });
+        }
+      } catch (e) {
+        show(String(e));
+      } finally {
+        localStorage.removeItem("access_token");
+        localStorage.removeItem("refresh_token");
+        updateSessionState();
+        show("Logged out");
+      }
+    }
+
+    function startOauth(provider) {
+      window.location.href = `${api}/oauth/${provider}/start`;
+    }
+
+    async function saveTenantSettings() {
+      try {
+        const payload = { alert_email: document.getElementById("tenantAlertEmail").value || null };
+        const data = await request("/tenant/settings", { method: "PATCH", body: JSON.stringify(payload) });
+        show(data);
+      } catch (e) { show(String(e)); }
+    }
+
+    async function createWebsite() {
+      try {
+        const payload = {
+          domain: document.getElementById("siteDomain").value,
+          url: document.getElementById("siteUrl").value,
+          scan_frequency_minutes: 60
+        };
+        const data = await request("/websites", { method: "POST", body: JSON.stringify(payload) });
+        localStorage.setItem("last_website_id", data.id);
+        show(data);
+      } catch (e) { show(String(e)); }
+    }
+
+    async function loadWebsites() {
+      try {
+        const data = await request("/websites", { method: "GET" });
+        if (Array.isArray(data) && data.length) localStorage.setItem("last_website_id", data[0].id);
+        show(data);
+      } catch (e) { show(String(e)); }
+    }
+
+    async function enqueueScan() {
+      try {
+        const websiteId = localStorage.getItem("last_website_id");
+        if (!websiteId) throw new Error("Create or list a website first.");
+        const data = await request("/scans/enqueue", { method: "POST", body: JSON.stringify({ website_id: websiteId }) });
+        show(data);
+      } catch (e) { show(String(e)); }
+    }
+
+    async function loadScans() {
+      try {
+        const data = await request("/scans/runs", { method: "GET" });
+        show(data);
+      } catch (e) { show(String(e)); }
+    }
+
+    async function loadFindings() {
+      try {
+        const data = await request("/findings", { method: "GET" });
+        show(data);
+      } catch (e) { show(String(e)); }
+    }
+
+    async function loadAlerts() {
+      try {
+        const data = await request("/alerts", { method: "GET" });
+        show(data);
+      } catch (e) { show(String(e)); }
+    }
+
+    async function getSubscription() {
+      try {
+        const data = await request("/billing/subscription", { method: "GET" });
+        show(data);
+      } catch (e) { show(String(e)); }
+    }
+
+    async function startCheckout() {
+      try {
+        const plan = document.getElementById("planSelect").value;
+        const data = await request("/billing/stripe/checkout-session", {
+          method: "POST",
+          body: JSON.stringify({ plan })
+        });
+        show(data);
+        if (data.checkout_url) {
+          window.open(data.checkout_url, "_blank");
+        }
+      } catch (e) { show(String(e)); }
+    }
+
+    async function openBillingPortal() {
+      try {
+        const data = await request("/billing/stripe/portal", { method: "POST" });
+        show(data);
+        if (data.portal_url) {
+          window.open(data.portal_url, "_blank");
+        }
+      } catch (e) { show(String(e)); }
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const oauthToken = params.get("token");
+    if (oauthToken) {
+      localStorage.setItem("access_token", oauthToken);
+      history.replaceState({}, document.title, "/");
+      show("OAuth login success. Token saved.");
+    }
+
+    const billingStatus = params.get("billing");
+    if (billingStatus) {
+      show(`Billing status: ${billingStatus}`);
+      history.replaceState({}, document.title, "/");
+    }
+
+    updateSessionState();
+  </script>
+</body>
+</html>
