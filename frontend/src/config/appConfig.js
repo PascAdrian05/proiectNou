@@ -1,7 +1,6 @@
 export const appConfig = {
-  appName: "Security Monitor",
-  // TODO: Bind your API base URL here for production.
-  apiBaseUrl: "/api/v1",
+  appName: import.meta.env.VITE_APP_NAME || "Security Monitor",
+  apiBaseUrl: import.meta.env.VITE_API_BASE_URL || "/api/v1",
   routes: {
     login: "/login",
     register: "/register",
