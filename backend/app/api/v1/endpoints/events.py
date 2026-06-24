@@ -1,37 +1,111 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 import asyncio
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
+from uuid import UUID
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, oauth2_scheme
 from app.core.database import get_session
+from app.core.security import decode_token
+from app.core.token_store import is_token_revoked
 from app.models.alert import Alert
 from app.models.finding import Finding
 from app.models.scan_run import ScanRun
 from app.models.user import User
+from app.schemas.auth import TokenPayload
+
+
+def _resolve_user_from_token(token: str, session: Session) -> User | None:
+    """Resolve user from either header or query param token."""
+    try:
+        payload = decode_token(token)
+        token_data = TokenPayload(sub=payload.get("sub"))
+        if token_data.sub is None or payload.get("type") != "access":
+            return None
+        jti = payload.get("jti")
+        if not jti or is_token_revoked(jti):
+            return None
+        user_id = UUID(token_data.sub)
+        return session.exec(select(User).where(User.id == user_id)).first()
+    except Exception:
+        return None
 
 
 router = APIRouter()
+executor = ThreadPoolExecutor(max_workers=4)
+
+
+def _get_scan_runs_sync(session: Session, tenant_id: str) -> list:
+    """Sync DB call for scan runs."""
+    return session.exec(
+        select(ScanRun)
+        .where(ScanRun.tenant_id == tenant_id)
+        .order_by(ScanRun.created_at.desc())
+        .limit(20)
+    ).all()
+
+
+def _get_alerts_sync(session: Session, tenant_id: str) -> list:
+    """Sync DB call for alerts."""
+    return session.exec(
+        select(Alert)
+        .where(Alert.tenant_id == tenant_id)
+        .order_by(Alert.created_at.desc())
+        .limit(50)
+    ).all()
+
+
+def _get_findings_sync(session: Session, tenant_id: str) -> list:
+    """Sync DB call for findings."""
+    return session.exec(
+        select(Finding)
+        .where(Finding.tenant_id == tenant_id)
+        .order_by(Finding.created_at.desc())
+        .limit(50)
+    ).all()
+
+
+async def _resolve_current_user(
+    session: Session = Depends(get_session),
+    token: str = Depends(oauth2_scheme),
+    token_query: str | None = Query(None, alias="token"),
+):
+    """Resolve current user from header or query param token (for EventSource support)."""
+    actual_token = token if token and token != "undefined" else (token_query if token_query and token_query != "undefined" else None)
+    if not actual_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    # First try header-based token
+    try:
+        user = get_current_user(session=session, token=actual_token)
+        if user:
+            return user
+    except Exception:
+        pass
+    
+    # Fallback to query param token resolution
+    user = _resolve_user_from_token(actual_token, session)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid authentication")
+    return user
 
 
 @router.get("/scans/stream")
 async def stream_scan_updates(
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(_resolve_current_user),
 ):
     async def event_generator():
         last_check = time.time()
         try:
             while True:
-                # Query recent scan runs for this tenant
-                runs = session.exec(
-                    select(ScanRun)
-                    .where(ScanRun.tenant_id == current_user.tenant_id)
-                    .order_by(ScanRun.created_at.desc())
-                    .limit(20)
-                ).all()
+                # Run sync DB query in threadpool to avoid blocking event loop
+                runs = await asyncio.get_event_loop().run_in_executor(
+                    executor, _get_scan_runs_sync, session, str(current_user.tenant_id)
+                )
 
                 payload = {
                     "timestamp": time.time(),
@@ -70,17 +144,14 @@ async def stream_scan_updates(
 @router.get("/alerts/stream")
 async def stream_alert_updates(
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(_resolve_current_user),
 ):
     async def event_generator():
         try:
             while True:
-                alerts = session.exec(
-                    select(Alert)
-                    .where(Alert.tenant_id == current_user.tenant_id)
-                    .order_by(Alert.created_at.desc())
-                    .limit(50)
-                ).all()
+                alerts = await asyncio.get_event_loop().run_in_executor(
+                    executor, _get_alerts_sync, session, str(current_user.tenant_id)
+                )
 
                 payload = {
                     "timestamp": time.time(),
@@ -118,17 +189,14 @@ async def stream_alert_updates(
 @router.get("/findings/stream")
 async def stream_finding_updates(
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(_resolve_current_user),
 ):
     async def event_generator():
         try:
             while True:
-                findings = session.exec(
-                    select(Finding)
-                    .where(Finding.tenant_id == current_user.tenant_id)
-                    .order_by(Finding.created_at.desc())
-                    .limit(50)
-                ).all()
+                findings = await asyncio.get_event_loop().run_in_executor(
+                    executor, _get_findings_sync, session, str(current_user.tenant_id)
+                )
 
                 payload = {
                     "timestamp": time.time(),
