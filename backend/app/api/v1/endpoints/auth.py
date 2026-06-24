@@ -271,8 +271,8 @@ def enable_2fa(
     if user.totp_enabled:
         raise HTTPException(status_code=400, detail="2FA is already enabled")
 
-    # Verify the token
-    if not verify_totp(payload.token, payload.secret):
+    # Verify the token against the stored secret (not the one from client)
+    if not verify_totp(payload.token, user.totp_secret):
         raise HTTPException(status_code=400, detail="Invalid TOTP token")
 
     # Enable 2FA
