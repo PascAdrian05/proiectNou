@@ -24,7 +24,7 @@ const PLANS = [
   {
     id: "pro",
     name: "Pro",
-    price: "€49",
+    price: "€30",
     period: "/month",
     features: ["Unlimited websites", "Hourly scans", "Behavior risk scoring", "Custom branding", "Stripe billing portal"],
     cta: "Upgrade to Pro",
