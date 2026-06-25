@@ -151,6 +151,72 @@ class AIService:
                 "message": f"Verification failed: {str(exc)}",
             }
 
+    async def get_proactive_insights(self, websites: list[dict], findings: list[dict]) -> dict:
+        """Generate proactive AI insights and recommendations."""
+        if not self.is_available():
+            return {
+                "available": False,
+                "message": "AI assistant is not configured.",
+            }
+
+        critical = [f for f in findings if str(f.get("severity", "")).lower() == "critical"]
+        high = [f for f in findings if str(f.get("severity", "")).lower() == "high"]
+        
+        # Group findings by type
+        findings_by_type = {}
+        for f in findings:
+            kind = f.get("kind", "unknown")
+            if kind not in findings_by_type:
+                findings_by_type[kind] = []
+            findings_by_type[kind].append(f)
+
+        prompt = (
+            "Analyze the current security posture and provide proactive, actionable insights. "
+            "Focus on: 1) Immediate security risks to address, 2) Quick wins for improvement, "
+            "3) Long-term security strategy recommendations. "
+            "Format as JSON with keys: immediate_risks (array with title, severity, action), "
+            "quick_wins (array with title, benefit, effort), strategic_recommendations (array), "
+            "trend_analysis (string describing security trend), priority_order (array of finding types to address first)."
+            f"\n\nWebsites monitored: {len(websites)}"
+            f"\nCritical findings: {len(critical)}"
+            f"\nHigh findings: {len(high)}"
+            f"\nTotal open findings: {len(findings)}"
+            f"\nFinding types: {list(findings_by_type.keys())}"
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a proactive security advisor. "
+                            "Anticipate potential issues and provide forward-thinking recommendations. "
+                            "Be specific about actions and prioritize by impact vs effort. "
+                            "Format response as JSON."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.4,
+                max_tokens=1536,
+                response_format={"type": "json_object"},
+            )
+
+            import json
+            content = response.choices[0].message.content
+            result = json.loads(content)
+            result["available"] = True
+            result["generated_at"] = "now"
+            return result
+
+        except Exception as exc:
+            return {
+                "available": False,
+                "message": f"Could not generate proactive insights: {str(exc)}",
+            }
+
     def _build_finding_prompt(self, finding: dict, context: dict | None = None) -> str:
         parts = [
             "Analyze this security finding:",

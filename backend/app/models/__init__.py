@@ -1,5 +1,7 @@
 from app.models.ai_conversation import AIConversation
 from app.models.alert import Alert
+from app.models.audit_log import AuditLog
+from app.models.credential import Credential
 from app.models.finding import Finding
 from app.models.oauth_account import OAuthAccount
 from app.models.scan_run import ScanRun
@@ -12,6 +14,8 @@ from app.models.website import Website
 __all__ = [
 	"AIConversation",
 	"Alert",
+	"AuditLog",
+	"Credential",
 	"Finding",
 	"OAuthAccount",
 	"ScanRun",

@@ -1,11 +1,16 @@
+import { useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { BehaviorTracker } from "../components/BehaviorTracker";
 import { LiveUsersBadge } from "../components/LiveUsersBadge";
+import { TrustBadge } from "../components/TrustBadge";
+import SecurityBadge from "../components/SecurityBadge";
+import StepUpModal from "../components/StepUpModal";
 import { AIAssistant } from "../components/AIAssistant";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { authService } from "../services/api/authService";
 import { appConfig } from "../config/appConfig";
+import { storage } from "../services/storage";
 
 const publicLinks = [
   { to: appConfig.routes.login, label: "Login" },
@@ -20,6 +25,7 @@ const protectedLinks = [
   { to: appConfig.routes.alerts, label: "Alerts" },
   { to: appConfig.routes.settings, label: "Settings" },
   { to: appConfig.routes.billing, label: "Billing" },
+  { to: appConfig.routes.security, label: "Security" },
 ];
 
 export function AppLayout() {
@@ -69,6 +75,8 @@ export function AppLayout() {
             </Link>
           ))}
         </nav>
+        <TrustBadge />
+        {isAuthenticated && <SecurityBadge />}
         {isAuthenticated && <LiveUsersBadge />}
       </header>
       {isAuthenticated && <BehaviorTracker />}

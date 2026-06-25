@@ -69,10 +69,22 @@ export async function apiAuthRequest(path, options = {}) {
     headers.Authorization = `Bearer ${session.accessToken}`;
   }
 
+  // If we have a step-up token, attach it
+  if (session.stepUpToken) {
+    headers["X-Step-Up-Token"] = session.stepUpToken;
+  }
+
   let response = await fetch(`${appConfig.apiBaseUrl}${path}`, {
     ...options,
     headers,
   });
+
+  // Check if step-up authentication is required
+  if (response.status === 401 && response.headers.get("X-Step-Up-Required") === "true") {
+    const error = new Error("Step-up authentication required");
+    error.stepUpRequired = true;
+    throw error;
+  }
 
   if (response.status === 401 && session.refreshToken) {
     try {
@@ -81,6 +93,10 @@ export async function apiAuthRequest(path, options = {}) {
         ...buildHeaders(options),
         Authorization: `Bearer ${refreshedSession.accessToken}`,
       };
+
+      if (session.stepUpToken) {
+        retryHeaders["X-Step-Up-Token"] = session.stepUpToken;
+      }
 
       response = await fetch(`${appConfig.apiBaseUrl}${path}`, {
         ...options,
@@ -96,6 +112,12 @@ export async function apiAuthRequest(path, options = {}) {
   const payload = contentType.includes("application/json") ? await response.json() : await response.text();
 
   if (!response.ok) {
+    // Check again for step-up required (in case refresh didn't trigger it)
+    if (response.headers.get("X-Step-Up-Required") === "true") {
+      const error = new Error("Step-up authentication required");
+      error.stepUpRequired = true;
+      throw error;
+    }
     const message = typeof payload === "string" ? payload : payload.detail || "Request failed";
     throw new Error(message);
   }

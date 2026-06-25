@@ -16,6 +16,8 @@ const BillingPage = lazy(() => import("../pages/BillingPage").then((module) => (
 const SettingsPage = lazy(() => import("../pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 const OnboardingPage = lazy(() => import("../pages/OnboardingPage").then((module) => ({ default: module.OnboardingPage })));
 const PublicReportPage = lazy(() => import("../pages/PublicReportPage").then((module) => ({ default: module.PublicReportPage })));
+const SecurityPage = lazy(() => import("../pages/SecurityPage").then((module) => ({ default: module.SecurityPage })));
+const StatusPage = lazy(() => import("../pages/StatusPage").then((module) => ({ default: module.StatusPage })));
 
 function ProtectedRoute({ children }) {
   const { isAuthenticated } = useAuth();
@@ -152,6 +154,22 @@ export function AppRouter() {
                 <OnboardingPage />
               </LazyRoute>
             </ProtectedRoute>
+          }
+        />
+        <Route
+          path={appConfig.routes.security}
+          element={
+            <LazyRoute>
+              <SecurityPage />
+            </LazyRoute>
+          }
+        />
+        <Route
+          path={appConfig.routes.status}
+          element={
+            <LazyRoute>
+              <StatusPage />
+            </LazyRoute>
           }
         />
       </Route>

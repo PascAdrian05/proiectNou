@@ -14,5 +14,7 @@ export const appConfig = {
     settings: "/settings",
     onboarding: "/onboarding",
     publicReport: "/public/report/:shareToken",
+    security: "/security",
+    status: "/status",
   },
 };

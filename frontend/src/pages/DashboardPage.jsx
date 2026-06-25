@@ -15,6 +15,7 @@ import { websitesService } from "../services/api/websitesService";
 import { appConfig } from "../config/appConfig";
 import { buildAlertFeed, buildSevenDayTrend, buildWebsiteInsights, getTopIssues } from "../utils/dashboardMetrics";
 import { exportReportCsv } from "../utils/reportExport";
+import { exportReportPdf } from "../utils/reportExportPdf";
 import { BehaviorRiskCard } from "../components/BehaviorRiskCard";
 import { SeverityBadge } from "../components/SeverityBadge";
 import { StatCard } from "../components/StatCard";
@@ -175,6 +176,16 @@ export function DashboardPage() {
     toast.success("CSV report downloaded.");
   }
 
+  function onExportPdf() {
+    exportReportPdf({ 
+      insights: websiteInsights, 
+      topIssues, 
+      alerts: alertFeed,
+      tenantName: brandingForm.brand_name || "Security Monitor"
+    });
+    toast.success("PDF report downloaded.");
+  }
+
   async function onCreateShareLink() {
     try {
       const data = await reportService.createShareLink();
@@ -209,6 +220,7 @@ export function DashboardPage() {
         </div>
         <div className="dashboard-actions">
           <button type="button" onClick={onExportCsv}>CSV Report</button>
+          <button type="button" onClick={onExportPdf}>PDF Report</button>
           <button type="button" onClick={onCreateShareLink}>Share report</button>
         </div>
       </div>

@@ -25,6 +25,7 @@ def create_access_token(
     expires_delta: timedelta | None = None,
     tenant_id: str | None = None,
     role: str | None = None,
+    step_up_verified: bool = False,
 ) -> str:
     expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=settings.access_token_expire_minutes))
     to_encode: dict[str, Any] = {
@@ -34,6 +35,27 @@ def create_access_token(
         "role": role,
         "type": "access",
         "jti": str(uuid4()),
+        "step_up_verified": step_up_verified,
+    }
+    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
+
+
+def create_step_up_token(
+    subject: str,
+    tenant_id: str | None = None,
+    role: str | None = None,
+    expires_minutes: int = 5,
+) -> str:
+    """Create a short-lived token for step-up authentication."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)
+    to_encode: dict[str, Any] = {
+        "sub": subject,
+        "exp": expire,
+        "tenant_id": tenant_id,
+        "role": role,
+        "type": "step_up",
+        "jti": str(uuid4()),
+        "step_up_verified": True,
     }
     return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
 

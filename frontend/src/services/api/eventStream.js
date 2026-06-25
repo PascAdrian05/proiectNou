@@ -3,10 +3,14 @@ export function createEventSource(url, options = {}) {
   const headers = options.headers || {};
 
   if (session?.accessToken) {
-    headers.Authorization = `Bearer ${session.accessToken}`;
+    // EventSource doesn't support headers natively, so we pass token as query param
+    // The server needs to be updated to support this or use a library that supports headers
+    const urlWithToken = new URL(url, window.location.origin);
+    urlWithToken.searchParams.append("token", session.accessToken);
+    return new EventSource(urlWithToken.toString());
   }
 
-  return new EventSource(url, { headers });
+  return new EventSource(url);
 }
 
 export async function* readEventStream(source) {

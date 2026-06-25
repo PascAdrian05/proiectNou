@@ -729,6 +729,53 @@ select {
   border: 1px solid var(--line);
 }
 
+.onboarding-features {
+  margin: 1.5rem 0;
+  padding: 1rem 1.25rem;
+  border-radius: 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+}
+
+.onboarding-features h3 {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+}
+
+.onboarding-features ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.onboarding-features li {
+  margin-bottom: 0.5rem;
+  color: var(--ink);
+}
+
+.onboarding-complete-info {
+  margin: 1.5rem 0;
+  padding: 1rem 1.25rem;
+  border-radius: 12px;
+  background: var(--success-bg);
+  border: 1px solid #86efac;
+}
+
+.onboarding-complete-info h3 {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+  color: var(--success-ink);
+}
+
+.onboarding-complete-info ul {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--ink);
+}
+
+.onboarding-complete-info li {
+  margin-bottom: 0.5rem;
+}
+
 .alert-nudge {
   display: flex;
   justify-content: space-between;
@@ -778,6 +825,48 @@ select {
 
 .settings-info li {
   margin-bottom: 0.4rem;
+}
+
+.settings-section {
+  margin-top: 2rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--line);
+}
+
+.settings-section h3 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+
+.two-factor-enabled,
+.two-factor-disabled,
+.two-factor-setup,
+.two-factor-verify,
+.two-factor-disable {
+  margin-top: 1rem;
+  padding: 1rem;
+  border-radius: 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+}
+
+.success-text {
+  color: var(--success-ink);
+  font-weight: 600;
+}
+
+.qr-code-container {
+  display: flex;
+  justify-content: center;
+  margin: 1rem 0;
+  padding: 1rem;
+  background: #fff;
+  border-radius: 12px;
+}
+
+.qr-code-container img {
+  max-width: 200px;
+  height: auto;
 }
 
 /* Finding cards */
@@ -1156,4 +1245,195 @@ select {
 
 .ai-panel-footer button {
   flex: 1 1 140px;
+}
+
+/* Trust Badge */
+.trust-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.trust-icon {
+  font-size: 1rem;
+}
+
+.trust-text {
+  color: var(--ink-soft);
+}
+
+/* Security Page */
+.security-content {
+  display: grid;
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.security-section {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1.25rem;
+  background: var(--surface);
+}
+
+.security-section h3 {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+  color: var(--accent);
+}
+
+.security-section h4 {
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+}
+
+.security-section ul {
+  margin: 0.5rem 0;
+  padding-left: 1.2rem;
+  color: var(--ink-soft);
+}
+
+.security-section li {
+  margin-bottom: 0.4rem;
+}
+
+.security-section p {
+  color: var(--ink);
+}
+
+.security-section.highlight {
+  border-color: var(--accent-2);
+  background: color-mix(in srgb, var(--success-bg) 30%, var(--surface));
+}
+
+.security-section.highlight h3 {
+  color: var(--accent-2);
+}
+
+/* Status Page */
+.status-overview {
+  margin-bottom: 1.5rem;
+}
+
+.status-banner {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+}
+
+.status-banner.operational {
+  background: var(--success-bg);
+  border-color: #86efac;
+}
+
+.status-banner.degraded {
+  background: #fef3c7;
+  border-color: #fcd34d;
+}
+
+.status-icon {
+  font-size: 2rem;
+}
+
+.status-banner h3 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.status-banner p {
+  margin: 0.25rem 0 0;
+}
+
+.status-services {
+  margin-bottom: 1.5rem;
+}
+
+.status-services h3 {
+  margin-bottom: 1rem;
+}
+
+.service-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.service-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1rem;
+  background: var(--surface);
+}
+
+.service-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.service-header h4 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.service-status {
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.service-status.operational {
+  color: var(--success-ink);
+}
+
+.service-status.degraded {
+  color: #b45309;
+}
+
+.status-incidents {
+  margin-bottom: 1.5rem;
+}
+
+.status-incidents h3 {
+  margin-bottom: 1rem;
+}
+
+.incident-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.incident-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1rem;
+  background: var(--surface);
+  border-left: 4px solid #fcd34d;
+}
+
+.incident-card h4 {
+  margin: 0 0 0.5rem;
+}
+
+.status-message {
+  padding: 1rem;
+  border-radius: 12px;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+}
+
+.status-message p {
+  margin: 0;
 }

@@ -91,3 +91,28 @@ async def verify_posture(
     ]
 
     return await ai_service.verify_security_posture(website_data, finding_data)
+
+
+@router.post("/proactive-insights")
+async def get_proactive_insights(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate proactive AI insights based on current security posture."""
+    websites = session.exec(select(Website)).all()
+    findings = session.exec(select(Finding).where(Finding.status == "open")).all()
+
+    website_data = [{"id": w.id, "domain": w.domain} for w in websites]
+    finding_data = [
+        {
+            "id": f.id,
+            "severity": f.severity,
+            "kind": f.kind,
+            "title": f.title,
+            "created_at": f.created_at.isoformat() if f.created_at else None,
+        }
+        for f in findings
+    ]
+
+    # Generate insights focused on actionable recommendations
+    return await ai_service.get_proactive_insights(website_data, finding_data)

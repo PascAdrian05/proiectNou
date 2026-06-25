@@ -18,6 +18,15 @@ const SCAN_STEPS = [
   "Calculating your security score...",
 ];
 
+const ONBOARDING_STEPS = [
+  { id: "welcome", label: "1. Welcome", description: "Learn about Security Monitor" },
+  { id: "add-site", label: "2. Add Site", description: "Add your first website" },
+  { id: "scanning", label: "3. Scanning", description: "Security scan in progress" },
+  { id: "results", label: "4. Results", description: "Review your security score" },
+  { id: "alerts", label: "5. Alerts", description: "Set up notifications" },
+  { id: "complete", label: "6. Complete", description: "Ready to go" },
+];
+
 export function OnboardingPage() {
   const navigate = useNavigate();
   const toast = useToast();
@@ -30,6 +39,8 @@ export function OnboardingPage() {
   const [website, setWebsite] = useState(null);
   const [findings, setFindings] = useState([]);
   const [scans, setScans] = useState([]);
+  const [alertEmail, setAlertEmail] = useState("");
+  const [alertWebhook, setAlertWebhook] = useState("");
 
   useEffect(() => {
     let isMounted = true;
@@ -133,14 +144,38 @@ export function OnboardingPage() {
   return (
     <section className="page-card onboarding-shell">
       <div className="onboarding-progress">
-        <span className={step === "welcome" ? "active" : ""}>1. Your site</span>
-        <span className={step === "scanning" ? "active" : ""}>2. Scanning</span>
-        <span className={step === "results" ? "active" : ""}>3. Results</span>
+        {ONBOARDING_STEPS.map((s) => (
+          <span key={s.id} className={step === s.id ? "active" : ""} title={s.description}>
+            {s.label}
+          </span>
+        ))}
       </div>
 
       {step === "welcome" && (
         <div className="onboarding-step">
-          <h2>Welcome! Let's scan your first website.</h2>
+          <h2>Welcome to Security Monitor! 🛡️</h2>
+          <p className="hint">
+            We'll help you set up continuous security monitoring for your websites in just a few minutes.
+          </p>
+          <div className="onboarding-features">
+            <h3>What you'll get:</h3>
+            <ul>
+              <li>✅ Automated security scans (SSL, headers, ports)</li>
+              <li>✅ Real-time security scoring</li>
+              <li>✅ AI-powered security insights</li>
+              <li>✅ Instant alerts via email or webhooks</li>
+              <li>✅ Beautiful shareable security reports</li>
+            </ul>
+          </div>
+          <button type="button" onClick={() => setStep("add-site")}>
+            Get Started →
+          </button>
+        </div>
+      )}
+
+      {step === "add-site" && (
+        <div className="onboarding-step">
+          <h2>Add your first website</h2>
           <p className="hint">
             Enter your domain and we'll run a full security check in under a minute — SSL, headers, uptime, and exposed ports.
           </p>
@@ -162,6 +197,9 @@ export function OnboardingPage() {
             </button>
           </form>
           {error && <p className="error-text">{error}</p>}
+          <button type="button" className="ghost-button" onClick={() => setStep("welcome")}>
+            ← Back
+          </button>
         </div>
       )}
 
@@ -206,15 +244,76 @@ export function OnboardingPage() {
           )}
 
           <div className="onboarding-cta">
-            <button type="button" onClick={() => navigate(appConfig.routes.settings)}>
-              Set up alerts
+            <button type="button" onClick={() => setStep("alerts")}>
+              Set up alerts →
             </button>
             <button type="button" className="ghost-button" onClick={() => navigate(appConfig.routes.dashboard)}>
-              Go to dashboard
+              Skip for now
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === "alerts" && (
+        <div className="onboarding-step">
+          <h2>Set up alerts (optional)</h2>
+          <p className="hint">
+            Get notified instantly when we find security issues. You can always configure this later in Settings.
+          </p>
+          <form className="form-grid onboarding-form" onSubmit={(e) => { e.preventDefault(); setStep("complete"); }}>
+            <label>
+              Email for alerts
+              <input
+                type="email"
+                placeholder="you@example.com"
+                value={alertEmail}
+                onChange={(event) => setAlertEmail(event.target.value)}
+              />
+              <span className="field-hint">We'll send security alerts here</span>
+            </label>
+            <label>
+              Webhook URL (optional)
+              <input
+                type="url"
+                placeholder="https://hooks.slack.com/..."
+                value={alertWebhook}
+                onChange={(event) => setAlertWebhook(event.target.value)}
+              />
+              <span className="field-hint">For Slack, Discord, or custom integrations</span>
+            </label>
+            <button type="submit">
+              Complete setup →
+            </button>
+          </form>
+          <button type="button" className="ghost-button" onClick={() => setStep("results")}>
+            ← Back
+          </button>
+        </div>
+      )}
+
+      {step === "complete" && (
+        <div className="onboarding-step">
+          <h2>You're all set! 🎉</h2>
+          <p className="hint">
+            Your website is now being monitored continuously. We'll scan it regularly and alert you to any issues.
+          </p>
+          <div className="onboarding-complete-info">
+            <h3>What happens next:</h3>
+            <ul>
+              <li>🔄 Automatic scans will run periodically</li>
+              <li>📊 Your security score will update automatically</li>
+              <li>🔔 You'll receive alerts if issues are found</li>
+              <li>📈 Track trends in your dashboard</li>
+              <li>🤖 Use AI Assistant for security insights</li>
+            </ul>
+          </div>
+          <div className="onboarding-cta">
+            <button type="button" onClick={() => navigate(appConfig.routes.dashboard)}>
+              Go to Dashboard →
             </button>
           </div>
           <p className="hint onboarding-tip">
-            Tip: Configure email or Slack alerts so you're notified instantly — you won't need to check the dashboard every day.
+            Pro tip: Enable 2FA in Settings for enhanced account security.
           </p>
         </div>
       )}

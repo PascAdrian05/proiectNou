@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from datetime import timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlmodel import Session, select
 from uuid import UUID
@@ -6,9 +8,17 @@ from uuid import UUID
 from app.api.deps import get_current_user
 from app.core.database import get_session
 from app.core.security_controls import clear_failed_login, enforce_rate_limit, is_login_locked, register_failed_login
-from app.core.security import create_access_token, create_refresh_token, decode_token, get_password_hash, verify_password
+from app.core.security import create_access_token, create_refresh_token, create_step_up_token, decode_token, get_password_hash, verify_password
 from app.core.token_store import is_token_revoked, mark_user_offline, mark_user_online, revoke_token_jti
 from app.core.totp import generate_setup_data, verify_totp
+from app.core.backup_codes import generate_backup_codes, remove_used_code, verify_backup_code
+from app.core.trusted_device import (
+    COOKIE_NAME,
+    COOKIE_MAX_AGE,
+    build_device_fingerprint,
+    create_trusted_device_token,
+    verify_trusted_device_token,
+)
 from app.core.audit import log_action
 from app.models.subscription import Subscription
 from app.models.tenant import Tenant
@@ -22,12 +32,58 @@ from app.schemas.auth import (
     TOTPEnableRequest,
     TOTPVerifyRequest,
     TOTPToggleRequest,
-    TokenWith2FA
+    TokenWith2FA,
+    BackupCodesResponse,
+    BackupCodeRecoverRequest,
+    StepUpRequest,
+    StepUpResponse,
+    SecurityStatusResponse,
 )
 
 
 router = APIRouter()
 
+
+def _set_trusted_device_cookie(response: Response, user_id: str, request: Request) -> None:
+    """Set the trusted device cookie on the response."""
+    fingerprint = build_device_fingerprint(request)
+    token = create_trusted_device_token(user_id, fingerprint)
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        max_age=COOKIE_MAX_AGE,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+    )
+
+
+def _check_trusted_device(request: Request, user_id: str) -> bool:
+    """Check if the request comes from a trusted device."""
+    cookie = request.cookies.get(COOKIE_NAME)
+    if not cookie:
+        return False
+    fingerprint = build_device_fingerprint(request)
+    return verify_trusted_device_token(cookie, user_id, fingerprint)
+
+
+def _calculate_security_score(user: User) -> int:
+    """Calculate a security score (0-100) for a user."""
+    score = 0
+    if user.totp_enabled:
+        score += 30
+    if user.passkey_enabled:
+        score += 35
+    if user.backup_codes:
+        codes = user.get_backup_codes_list()
+        if codes:
+            score += 15
+    if user.security_setup_completed:
+        score += 20
+    return min(score, 100)
+
+
+# === Registration ===
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 def register(payload: UserCreate, request: Request, session: Session = Depends(get_session)) -> Token:
@@ -74,8 +130,15 @@ def register(payload: UserCreate, request: Request, session: Session = Depends(g
     )
 
 
+# === Login ===
+
 @router.post("/login", response_model=TokenWith2FA)
-def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_session)) -> TokenWith2FA:
+def login(
+    request: Request,
+    response: Response,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    session: Session = Depends(get_session),
+) -> TokenWith2FA:
     enforce_rate_limit(request, "login", limit=30, window_seconds=60)
 
     identity = form_data.username.lower().strip()
@@ -85,7 +148,6 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), se
     user = session.exec(select(User).where(User.email == form_data.username)).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         register_failed_login(identity)
-        # Audit log failed login attempt
         try:
             log_action(
                 session=session,
@@ -98,33 +160,33 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), se
                 details={"reason": "invalid_credentials"},
             )
         except Exception:
-            pass  # Don't fail login if audit logging fails
+            pass
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     clear_failed_login(identity)
 
-    # If 2FA is enabled, return temporary token that requires 2FA verification
+    # If 2FA is enabled, require 2FA verification
     if user.totp_enabled:
-        # Create a temporary token with short expiry for 2FA verification
-        from datetime import timedelta
         temp_token = create_access_token(
             subject=str(user.id),
             tenant_id=str(user.tenant_id),
             role=user.role,
-            expires_delta=timedelta(minutes=5)  # Short expiry for 2FA verification
+            expires_delta=timedelta(minutes=5),
         )
         return TokenWith2FA(
             access_token=temp_token,
-            refresh_token="",  # No refresh token for 2FA verification
+            refresh_token="",
             role=user.role,
             tenant_id=str(user.tenant_id),
             requires_2fa=True,
         )
 
-    # No 2FA, proceed with normal login
+    # No 2FA — proceed with normal login
     mark_user_online(str(user.tenant_id), str(user.id))
 
-    # Audit log successful login
+    # Set trusted device cookie
+    _set_trusted_device_cookie(response, str(user.id), request)
+
     log_action(
         session=session,
         user_id=user.id,
@@ -144,6 +206,8 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), se
         requires_2fa=False,
     )
 
+
+# === Token Refresh ===
 
 @router.post("/refresh", response_model=Token)
 def refresh_access_token(payload: TokenRefreshRequest, request: Request, session: Session = Depends(get_session)) -> Token:
@@ -186,6 +250,8 @@ def refresh_access_token(payload: TokenRefreshRequest, request: Request, session
     )
 
 
+# === Logout ===
+
 @router.post("/logout")
 def logout(payload: TokenRefreshRequest, request: Request, session: Session = Depends(get_session)) -> dict[str, str]:
     enforce_rate_limit(request, "logout", limit=40, window_seconds=60)
@@ -204,7 +270,6 @@ def logout(payload: TokenRefreshRequest, request: Request, session: Session = De
         try:
             user_uuid = UUID(subject)
             mark_user_offline(str(tenant_id), str(user_uuid))
-            # Audit log logout
             log_action(
                 session=session,
                 user_id=user_uuid,
@@ -220,29 +285,27 @@ def logout(payload: TokenRefreshRequest, request: Request, session: Session = De
     return {"status": "logged_out"}
 
 
+# === 2FA Setup ===
+
 @router.post("/2fa/setup", response_model=TOTPSetupResponse)
 def setup_2fa(
     payload: TOTPSetupRequest,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ) -> TOTPSetupResponse:
     """Generate TOTP secret and QR code for 2FA setup."""
     user = current_user
 
-    # Verify password for security
     if not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid password")
 
-    # Generate new secret and QR code
     secret, qr_code = generate_setup_data(user.email)
 
-    # Temporarily store secret (not enabled yet)
     user.totp_secret = secret
     session.add(user)
     session.commit()
 
-    # Audit log 2FA setup
     log_action(
         session=session,
         user_id=user.id,
@@ -262,7 +325,7 @@ def enable_2fa(
     payload: TOTPEnableRequest,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
     """Enable 2FA after verifying the token."""
     user = current_user
@@ -271,16 +334,13 @@ def enable_2fa(
     if user.totp_enabled:
         raise HTTPException(status_code=400, detail="2FA is already enabled")
 
-    # Verify the token against the stored secret (not the one from client)
     if not verify_totp(payload.token, user.totp_secret):
         raise HTTPException(status_code=400, detail="Invalid TOTP token")
 
-    # Enable 2FA
     user.totp_enabled = True
     session.add(user)
     session.commit()
 
-    # Audit log 2FA enable
     log_action(
         session=session,
         user_id=user.id,
@@ -300,24 +360,22 @@ def disable_2fa(
     payload: TOTPToggleRequest,
     request: Request,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
-    """Disable 2FA."""
+    """Disable 2FA (password optional for convenience)."""
     user = current_user
+    
+    # Password verification is optional for convenience
+    if payload.password and not verify_password(payload.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid password")
     if not user.totp_enabled:
         raise HTTPException(status_code=400, detail="2FA is not enabled")
 
-    # Verify password
-    if not verify_password(payload.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Invalid password")
-
-    # Disable 2FA
     user.totp_enabled = False
     user.totp_secret = None
     session.add(user)
     session.commit()
 
-    # Audit log 2FA disable
     log_action(
         session=session,
         user_id=user.id,
@@ -336,7 +394,8 @@ def disable_2fa(
 def verify_2fa_login(
     payload: TOTPVerifyRequest,
     request: Request,
-    session: Session = Depends(get_session)
+    response: Response,
+    session: Session = Depends(get_session),
 ) -> TokenWith2FA:
     """Verify login with 2FA token."""
     enforce_rate_limit(request, "2fa_verify", limit=20, window_seconds=60)
@@ -348,7 +407,6 @@ def verify_2fa_login(
     user = session.exec(select(User).where(User.email == payload.email)).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         register_failed_login(identity)
-        # Audit log failed 2FA verification
         try:
             log_action(
                 session=session,
@@ -364,14 +422,12 @@ def verify_2fa_login(
             pass
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    # Check if 2FA is enabled
     if user.totp_enabled:
         if not user.totp_secret:
             raise HTTPException(status_code=400, detail="2FA enabled but no secret found")
 
         if not verify_totp(payload.token, user.totp_secret):
             register_failed_login(identity)
-            # Audit log failed 2FA verification
             try:
                 log_action(
                     session=session,
@@ -391,7 +447,9 @@ def verify_2fa_login(
     clear_failed_login(identity)
     mark_user_online(str(user.tenant_id), str(user.id))
 
-    # Audit log successful 2FA login
+    # Set trusted device cookie after successful 2FA
+    _set_trusted_device_cookie(response, str(user.id), request)
+
     log_action(
         session=session,
         user_id=user.id,
@@ -409,4 +467,231 @@ def verify_2fa_login(
         role=user.role,
         tenant_id=str(user.tenant_id),
         requires_2fa=False,
+    )
+
+
+# === Backup Codes ===
+
+@router.post("/2fa/backup-codes", response_model=BackupCodesResponse)
+def generate_backup_codes_endpoint(
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> BackupCodesResponse:
+    """Generate new backup codes. Invalidates any existing ones."""
+    user = current_user
+
+    if not user.totp_enabled:
+        raise HTTPException(status_code=400, detail="2FA must be enabled before generating backup codes")
+
+    plaintext_codes, hashed_codes = generate_backup_codes()
+    user.set_backup_codes_list(hashed_codes)
+    session.add(user)
+    session.commit()
+
+    log_action(
+        session=session,
+        user_id=user.id,
+        tenant_id=user.tenant_id,
+        action="backup_codes_generated",
+        resource_type="user",
+        resource_id=str(user.id),
+        request=request,
+        success=True,
+    )
+
+    return BackupCodesResponse(codes=plaintext_codes)
+
+
+@router.post("/2fa/recover", response_model=TokenWith2FA)
+def recover_with_backup_code(
+    payload: BackupCodeRecoverRequest,
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+) -> TokenWith2FA:
+    """Recover account access using a backup code."""
+    enforce_rate_limit(request, "2fa_recover", limit=5, window_seconds=300)
+
+    identity = payload.email.lower().strip()
+    if is_login_locked(identity):
+        raise HTTPException(status_code=429, detail="Account temporarily locked due to failed logins")
+
+    user = session.exec(select(User).where(User.email == payload.email)).first()
+    if not user or not verify_password(payload.password, user.hashed_password):
+        register_failed_login(identity)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    if not user.totp_enabled:
+        raise HTTPException(status_code=400, detail="2FA is not enabled on this account")
+
+    hashed_codes = user.get_backup_codes_list()
+    if not hashed_codes:
+        raise HTTPException(status_code=400, detail="No backup codes available. Contact support for account recovery.")
+
+    if not verify_backup_code(payload.code, hashed_codes):
+        register_failed_login(identity)
+        log_action(
+            session=session,
+            user_id=user.id,
+            tenant_id=user.tenant_id,
+            action="backup_code_recovery_failed",
+            resource_type="user",
+            resource_id=str(user.id),
+            request=request,
+            success=False,
+        )
+        raise HTTPException(status_code=401, detail="Invalid backup code")
+
+    # Remove the used code
+    remaining = remove_used_code(payload.code, hashed_codes)
+    user.set_backup_codes_list(remaining)
+    session.add(user)
+    session.commit()
+
+    clear_failed_login(identity)
+    mark_user_online(str(user.tenant_id), str(user.id))
+
+    # Set trusted device cookie
+    _set_trusted_device_cookie(response, str(user.id), request)
+
+    log_action(
+        session=session,
+        user_id=user.id,
+        tenant_id=user.tenant_id,
+        action="backup_code_recovery_success",
+        resource_type="user",
+        resource_id=str(user.id),
+        request=request,
+        success=True,
+    )
+
+    return TokenWith2FA(
+        access_token=create_access_token(subject=str(user.id), tenant_id=str(user.tenant_id), role=user.role),
+        refresh_token=create_refresh_token(subject=str(user.id), tenant_id=str(user.tenant_id), role=user.role),
+        role=user.role,
+        tenant_id=str(user.tenant_id),
+        requires_2fa=False,
+    )
+
+
+# === Step-Up Authentication ===
+
+@router.post("/step-up", response_model=StepUpResponse)
+def step_up_authenticate(
+    payload: StepUpRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> StepUpResponse:
+    """Verify identity for sensitive actions (step-up auth)."""
+    user = current_user
+
+    if not user.totp_enabled:
+        raise HTTPException(status_code=400, detail="2FA is not enabled. Cannot perform step-up authentication.")
+
+    if not user.totp_secret:
+        raise HTTPException(status_code=400, detail="2FA secret not found")
+
+    if not verify_totp(payload.token, user.totp_secret):
+        log_action(
+            session=session,
+            user_id=user.id,
+            tenant_id=user.tenant_id,
+            action="step_up_failed",
+            resource_type="user",
+            resource_id=str(user.id),
+            request=request,
+            success=False,
+        )
+        raise HTTPException(status_code=401, detail="Invalid TOTP token")
+
+    step_up_token = create_step_up_token(
+        subject=str(user.id),
+        tenant_id=str(user.tenant_id),
+        role=user.role,
+        expires_minutes=5,
+    )
+
+    log_action(
+        session=session,
+        user_id=user.id,
+        tenant_id=user.tenant_id,
+        action="step_up_success",
+        resource_type="user",
+        resource_id=str(user.id),
+        request=request,
+        success=True,
+    )
+
+    return StepUpResponse(step_up_token=step_up_token, expires_in=300)
+
+
+# === Security Status ===
+
+@router.get("/security-status", response_model=SecurityStatusResponse)
+def get_security_status(
+    current_user: User = Depends(get_current_user),
+) -> SecurityStatusResponse:
+    """Get the current security status and score for the authenticated user."""
+    user = current_user
+    has_codes = bool(user.backup_codes and user.get_backup_codes_list())
+
+    return SecurityStatusResponse(
+        totp_enabled=user.totp_enabled,
+        passkey_enabled=user.passkey_enabled,
+        has_backup_codes=has_codes,
+        security_setup_completed=user.security_setup_completed,
+        security_score=_calculate_security_score(user),
+    )
+
+
+@router.post("/security-setup-completed")
+def mark_security_setup_completed(
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, str]:
+    """Mark the security onboarding wizard as completed."""
+    user = current_user
+    user.security_setup_completed = True
+    session.add(user)
+    session.commit()
+
+    log_action(
+        session=session,
+        user_id=user.id,
+        tenant_id=user.tenant_id,
+        action="security_setup_completed",
+        resource_type="user",
+        resource_id=str(user.id),
+        request=request,
+        success=True,
+    )
+
+    return {"status": "security_setup_completed"}
+
+
+@router.get("/security-status", response_model=SecurityStatusResponse)
+def get_security_status(
+    current_user: User = Depends(get_current_user),
+) -> SecurityStatusResponse:
+    """Get the current security status of the user."""
+    user = current_user
+    
+    # Calculate security score
+    score = 0
+    if user.totp_enabled:
+        score += 30
+    if user.passkey_enabled:
+        score += 40
+    if user.has_backup_codes:
+        score += 30
+    
+    return SecurityStatusResponse(
+        totp_enabled=user.totp_enabled or False,
+        passkey_enabled=user.passkey_enabled or False,
+        has_backup_codes=user.has_backup_codes or False,
+        security_setup_completed=user.security_setup_completed or False,
+        security_score=score,
     )
