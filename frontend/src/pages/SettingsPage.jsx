@@ -128,7 +128,7 @@ export function SettingsPage() {
   async function onEnable2FA() {
     setError("");
     try {
-      await authService.enable2FA({ secret: twoFactorSecret, token: twoFactorToken });
+      await authService.enable2fa(twoFactorSecret, twoFactorToken);
       setTwoFactorEnabled(true);
       setTwoFactorSetupStep("none");
       setTwoFactorToken("");
@@ -145,7 +145,7 @@ export function SettingsPage() {
   async function onDisable2FA() {
     setError("");
     try {
-      await authService.disable2FA({ password: "" }); // No password required
+      await authService.disable2fa(""); // No password required
       setTwoFactorEnabled(false);
       setTwoFactorPassword("");
       toast.success("2FA disabled successfully!");
