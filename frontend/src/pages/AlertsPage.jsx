@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { alertsService } from "../services/api/alertsService";
 import { createEventSource } from "../services/api/eventStream";
 import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
 import { appConfig } from "../config/appConfig";
 
 function formatTimestamp(value) {
@@ -19,6 +20,7 @@ function formatTimestamp(value) {
 
 export function AlertsPage() {
   const { isAuthenticated } = useAuth();
+  const { success, error: showError } = useToast();
   const [alerts, setAlerts] = useState([]);
   const [error, setError] = useState("");
   const [isBusy, setIsBusy] = useState(false);
@@ -70,18 +72,15 @@ export function AlertsPage() {
   }, []);
 
   async function deleteAlert(alertId) {
-    const confirmed = window.confirm("Delete this alert?");
-    if (!confirmed) {
-      return;
-    }
-
     setError("");
     setIsBusy(true);
     try {
       await alertsService.remove(alertId);
+      success("Alert deleted successfully");
       await loadAlerts();
     } catch (deleteError) {
       setError(deleteError.message || "Could not delete alert");
+      showError(deleteError.message || "Could not delete alert");
       setIsBusy(false);
     }
   }
@@ -89,27 +88,30 @@ export function AlertsPage() {
   return (
     <section className="page-card">
       <div className="list-header">
-        <h2>Alerts</h2>
+        <div>
+          <h2>Alerts</h2>
+          <p className="hint">Security alerts sent via email/webhook when findings are detected.</p>
+        </div>
         <button type="button" onClick={loadAlerts} disabled={isBusy || !isAuthenticated}>Refresh</button>
       </div>
-      <p className="hint">Delivered alerts and delivery statuses.</p>
       {error && <p className="error-text">{error}</p>}
 
       <div className="list-grid">
         {alerts.map((alert) => (
-          <article key={alert.id}>
-            <h4>{alert.channel || "unknown"}</h4>
+          <article key={alert.id} className={`alert-card alert-${alert.status}`}>
+            <h4>{alert.channel || "email"}</h4>
             <p><strong>Recipient:</strong> {alert.recipient || "n/a"}</p>
             <p><strong>Status:</strong> {alert.status || "pending"}</p>
             <p><strong>Sent:</strong> {formatTimestamp(alert.sent_at || alert.created_at)}</p>
+            {alert.error_message && <p className="error-text"><strong>Error:</strong> {alert.error_message}</p>}
             <div className="card-actions">
               <button type="button" className="danger-button" onClick={() => deleteAlert(alert.id)} disabled={isBusy || !isAuthenticated}>
-                Delete alert
+                Delete
               </button>
             </div>
           </article>
         ))}
-        {!alerts.length && !isBusy && <p className="hint">No alerts yet.</p>}
+        {!alerts.length && !isBusy && <p className="hint">No alerts yet. Alerts will appear here when security findings are detected and notifications are sent.</p>}
       </div>
     </section>
   );

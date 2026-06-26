@@ -1147,7 +1147,30 @@ select {
 
 .priority-low {
   background: #dbeafe;
-  color: #1d4ed8;
+  color: #1e40af;
+}
+
+/* Alert cards */
+.alert-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1rem;
+  background: var(--surface);
+  transition: border-color 0.2s ease;
+}
+
+.alert-card.alert-sent {
+  border-color: var(--success-bg);
+  background: color-mix(in srgb, var(--success-bg) 10%, var(--surface));
+}
+
+.alert-card.alert-failed {
+  border-color: var(--error-bg);
+  background: color-mix(in srgb, var(--error-bg) 10%, var(--surface));
+}
+
+.alert-card.alert-pending {
+  border-color: var(--line);
 }
 
 .ai-posture-score {

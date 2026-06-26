@@ -66,15 +66,11 @@ export function ScansPage() {
   }
 
   async function deleteScan(scanRunId) {
-    const confirmed = window.confirm("Delete this scan run and its related findings and alerts?");
-    if (!confirmed) {
-      return;
-    }
-
     setError("");
     setIsBusy(true);
     try {
       await scansService.remove(scanRunId);
+      success("Scan deleted successfully");
       await loadData(true);
     } catch (deleteError) {
       setError(deleteError.message || "Could not delete scan run");
