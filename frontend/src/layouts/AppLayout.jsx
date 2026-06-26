@@ -1,5 +1,18 @@
 import { useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
+import {
+  LayoutDashboard,
+  Globe,
+  Search,
+  AlertTriangle,
+  Bell,
+  CreditCard,
+  Settings,
+  Shield,
+  Sun,
+  Moon,
+  LogOut,
+} from "lucide-react";
 import { BehaviorTracker } from "../components/BehaviorTracker";
 import { LiveUsersBadge } from "../components/LiveUsersBadge";
 import { TrustBadge } from "../components/TrustBadge";
@@ -12,14 +25,14 @@ import { authService } from "../services/api/authService";
 import { appConfig } from "../config/appConfig";
 
 const protectedLinks = [
-  { to: appConfig.routes.dashboard, label: "Dashboard", icon: "\u{1F4CA}" },
-  { to: appConfig.routes.websites, label: "Websites", icon: "\u{1F310}" },
-  { to: appConfig.routes.scans, label: "Scans", icon: "\u{1F50D}" },
-  { to: appConfig.routes.findings, label: "Findings", icon: "\u{26A0}\uFE0F" },
-  { to: appConfig.routes.alerts, label: "Alerts", icon: "\u{1F514}" },
-  { to: appConfig.routes.billing, label: "Billing", icon: "\u{1F4B3}" },
-  { to: appConfig.routes.settings, label: "Settings", icon: "\u2699\uFE0F" },
-  { to: appConfig.routes.security, label: "Security", icon: "\u{1F6E1}\uFE0F" },
+  { to: appConfig.routes.dashboard, label: "Dashboard", Icon: LayoutDashboard },
+  { to: appConfig.routes.websites, label: "Websites", Icon: Globe },
+  { to: appConfig.routes.scans, label: "Scans", Icon: Search },
+  { to: appConfig.routes.findings, label: "Findings", Icon: AlertTriangle },
+  { to: appConfig.routes.alerts, label: "Alerts", Icon: Bell },
+  { to: appConfig.routes.billing, label: "Billing", Icon: CreditCard },
+  { to: appConfig.routes.settings, label: "Settings", Icon: Settings },
+  { to: appConfig.routes.security, label: "Security", Icon: Shield },
 ];
 
 export function AppLayout() {
@@ -53,30 +66,42 @@ export function AppLayout() {
           )}
         </div>
         <nav className="topnav">
-          {isAuthenticated && protectedLinks.map((link) => (
-            <Link key={link.to} className={location.pathname === link.to ? "active" : ""} to={link.to}>
-              {link.icon && <span className="nav-icon">{link.icon}</span>}
-              {link.label}
-            </Link>
-          ))}
+          {isAuthenticated && protectedLinks.map((link) => {
+            const Icon = link.Icon;
+            const isActive = location.pathname === link.to;
+            return (
+              <Link
+                key={link.to}
+                className={isActive ? "active" : ""}
+                to={link.to}
+                aria-current={isActive ? "page" : undefined}
+              >
+                {Icon && <Icon size={16} strokeWidth={2} aria-hidden="true" />}
+                <span>{link.label}</span>
+              </Link>
+            );
+          })}
         </nav>
         <div className="topbar-actions">
           <button type="button" className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
-            {isDark ? "\u2600 Light" : "\u263E Dark"}
+            {isDark ? <><Sun size={14} aria-hidden="true" /> Light</> : <><Moon size={14} aria-hidden="true" /> Dark</>}
           </button>
           {isAuthenticated && (
             <>
-              <button type="button" className="account-btn" onClick={() => setShowAccount((v) => !v)} title="Account details">
+              <button type="button" className="account-btn" onClick={() => setShowAccount((v) => !v)} title="Account details" aria-label="Account details">
                 <span className="account-avatar">{(auth.email || auth.role || "U")[0].toUpperCase()}</span>
               </button>
               <button type="button" className="ghost-button" onClick={() => setShowLogoutConfirm(true)}>
-                Logout
+                <LogOut size={14} aria-hidden="true" /> Logout
               </button>
             </>
           )}
         </div>
       </header>
       {isAuthenticated && <BehaviorTracker />}
+      {isAuthenticated && <LiveUsersBadge />}
+      {isAuthenticated && <TrustBadge />}
+      {isAuthenticated && <SecurityBadge />}
       {isAuthenticated && <AIAssistant />}
 
       <main className="content-wrap" key={location.pathname}>
@@ -90,7 +115,7 @@ export function AppLayout() {
             <div className="account-details">
               <div className="account-field">
                 <span className="account-label">Email</span>
-                <span className="account-value">{auth.email || auth.tenantId || "\u2014"}</span>
+                <span className="account-value">{auth.email || auth.tenantId || "—"}</span>
               </div>
               <div className="account-field">
                 <span className="account-label">Role</span>
@@ -104,7 +129,7 @@ export function AppLayout() {
               </div>
               <div className="account-field">
                 <span className="account-label">Tenant</span>
-                <span className="account-value account-mono">{auth.tenantId ? auth.tenantId.slice(0, 12) + "\u2026" : "\u2014"}</span>
+                <span className="account-value account-mono">{auth.tenantId ? auth.tenantId.slice(0, 12) + "…" : "—"}</span>
               </div>
             </div>
             <button type="button" className="ghost-button" onClick={() => { setShowAccount(false); navigate(appConfig.routes.billing); }}>

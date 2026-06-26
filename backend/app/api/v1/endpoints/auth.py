@@ -89,7 +89,12 @@ def _calculate_security_score(user: User) -> int:
 def register(payload: UserCreate, request: Request, session: Session = Depends(get_session)) -> Token:
     enforce_rate_limit(request, "register", limit=20, window_seconds=60)
 
-    existing = session.exec(select(User).where(User.email == payload.email)).first()
+    # Normalize email so login/register lookups agree.
+    normalized_email = (payload.email or "").lower().strip()
+    if not normalized_email:
+        raise HTTPException(status_code=400, detail="Email is required")
+
+    existing = session.exec(select(User).where(User.email == normalized_email)).first()
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
 
@@ -99,7 +104,7 @@ def register(payload: UserCreate, request: Request, session: Session = Depends(g
 
     user = User(
         tenant_id=tenant.id,
-        email=payload.email,
+        email=normalized_email,
         role="owner",
         hashed_password=get_password_hash(payload.password),
     )
@@ -364,17 +369,38 @@ def disable_2fa(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
-    """Disable 2FA (password optional for convenience)."""
+    """Disable 2FA.
+
+    The user must confirm with their password. Disabling 2FA is a sensitive
+    action — the previous implementation accepted an empty password.
+    """
     user = current_user
-    
-    # Password verification is optional for convenience
-    if payload.password and not verify_password(payload.password, user.hashed_password):
+
+    if not payload.password:
+        raise HTTPException(status_code=400, detail="Password is required to disable 2FA")
+    if not verify_password(payload.password, user.hashed_password):
+        # Audit the failed attempt before bailing out.
+        try:
+            log_action(
+                session=session,
+                user_id=user.id,
+                tenant_id=user.tenant_id,
+                action="2fa_disable_failed",
+                resource_type="user",
+                resource_id=str(user.id),
+                request=request,
+                success=False,
+                details={"reason": "invalid_password"},
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=401, detail="Invalid password")
     if not user.totp_enabled:
         raise HTTPException(status_code=400, detail="2FA is not enabled")
 
     user.totp_enabled = False
     user.totp_secret = None
+    user.backup_codes = None
     session.add(user)
     session.commit()
 
@@ -406,7 +432,12 @@ def verify_2fa_login(
     if is_login_locked(identity):
         raise HTTPException(status_code=429, detail="Account temporarily locked due to failed logins")
 
-    user = session.exec(select(User).where(User.email == payload.email)).first()
+    # Always compare against a normalized email so case / whitespace
+    # variants don't bypass the failed-login lockout.
+    email_normalized = (payload.email or "").lower().strip()
+    if not email_normalized:
+        raise HTTPException(status_code=400, detail="Email is required")
+    user = session.exec(select(User).where(User.email == email_normalized)).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         register_failed_login(identity)
         try:
@@ -515,11 +546,13 @@ def recover_with_backup_code(
     """Recover account access using a backup code."""
     enforce_rate_limit(request, "2fa_recover", limit=5, window_seconds=300)
 
-    identity = payload.email.lower().strip()
+    identity = (payload.email or "").lower().strip()
+    if not identity:
+        raise HTTPException(status_code=400, detail="Email is required")
     if is_login_locked(identity):
         raise HTTPException(status_code=429, detail="Account temporarily locked due to failed logins")
 
-    user = session.exec(select(User).where(User.email == payload.email)).first()
+    user = session.exec(select(User).where(User.email == identity)).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         register_failed_login(identity)
         raise HTTPException(status_code=401, detail="Invalid email or password")

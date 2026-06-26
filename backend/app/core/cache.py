@@ -1,48 +1,122 @@
+"""Redis-backed cache helpers with in-memory fallback.
+
+All operations are non-fatal: if Redis is unreachable, the call is a no-op.
+This module no longer opens new Redis connections per call — it shares a
+single pooled client via :mod:`app.core.redis_client`.
+"""
+
+from __future__ import annotations
+
 import json
-from typing import Any, Callable
+import threading
 from functools import wraps
+from typing import Any, Callable, Optional
 
-import redis as sync_redis
 from app.core.config import settings
+from app.core.redis_client import get_redis
 
 
-def _get_redis():
-    return sync_redis.from_url(settings.redis_url, decode_responses=True)
+_fallback_lock = threading.Lock()
+_fallback_store: dict[str, tuple[float, str]] = {}
+
+
+def _fallback_get(key: str) -> Optional[str]:
+    import time
+
+    now = time.time()
+    with _fallback_lock:
+        entry = _fallback_store.get(key)
+        if not entry:
+            return None
+        expires_at, value = entry
+        if expires_at and expires_at < now:
+            _fallback_store.pop(key, None)
+            return None
+        return value
+
+
+def _fallback_set(key: str, value: str, ttl: int) -> None:
+    import time
+
+    with _fallback_lock:
+        _fallback_store[key] = (time.time() + ttl if ttl else 0, value)
+
+
+def _fallback_delete_pattern(pattern: str) -> None:
+    import fnmatch
+
+    with _fallback_lock:
+        keys = [k for k in _fallback_store if fnmatch.fnmatch(k, pattern)]
+        for k in keys:
+            _fallback_store.pop(k, None)
 
 
 def cache_get(key: str) -> Any | None:
+    client = get_redis()
+    if client is None:
+        raw = _fallback_get(key)
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
     try:
-        r = _get_redis()
-        val = r.get(key)
-        r.close()
-        if val:
-            return json.loads(val)
+        val = client.get(key)
     except Exception:
-        pass
-    return None
+        return None
+    if not val:
+        return None
+    try:
+        return json.loads(val)
+    except Exception:
+        return None
 
 
 def cache_set(key: str, value: Any, ttl: int = 30) -> None:
+    payload = json.dumps(value, default=str)
+    client = get_redis()
+    if client is None:
+        _fallback_set(key, payload, ttl)
+        return
     try:
-        r = _get_redis()
-        r.setex(key, ttl, json.dumps(value, default=str))
-        r.close()
+        client.setex(key, ttl, payload)
     except Exception:
-        pass
+        _fallback_set(key, payload, ttl)
 
 
 def cache_delete_pattern(pattern: str) -> None:
+    client = get_redis()
+    if client is None:
+        _fallback_delete_pattern(pattern)
+        return
     try:
-        r = _get_redis()
-        keys = r.keys(pattern)
+        # ``scan_iter`` is O(N) without blocking the server like ``keys``.
+        keys = list(client.scan_iter(match=pattern, count=500))
         if keys:
-            r.delete(*keys)
-        r.close()
+            client.delete(*keys)
+    except Exception:
+        # Don't try the fallback here — partial state across two stores
+        # is worse than a transient miss.
+        pass
+
+
+def cache_delete(key: str) -> None:
+    client = get_redis()
+    if client is None:
+        with _fallback_lock:
+            _fallback_store.pop(key, None)
+        return
+    try:
+        client.delete(key)
     except Exception:
         pass
 
 
 def cached(ttl: int = 30, prefix: str = "cache") -> Callable:
+    """Cache decorator. Resolves the cache key from the first positional arg
+    (typically ``tenant_id``)."""
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -54,7 +128,9 @@ def cached(ttl: int = 30, prefix: str = "cache") -> Callable:
             result = func(*args, **kwargs)
             cache_set(key, result, ttl)
             return result
+
         return wrapper
+
     return decorator
 
 

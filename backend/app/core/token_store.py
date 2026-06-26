@@ -1,62 +1,67 @@
+"""Token revocation and presence tracking helpers backed by the shared Redis
+client. The previous implementation used a process-local client which meant
+revocations did not propagate between workers.
+"""
+
+from __future__ import annotations
+
 from datetime import datetime, timezone
 
-import redis
-
 from app.core.config import settings
+from app.core.redis_client import get_redis
 
 
-_client: redis.Redis | None = None
 PRESENCE_TTL_SECONDS = 90
 
 
-def _get_client() -> redis.Redis | None:
-    global _client
-    if _client is None and settings.redis_url:
-        try:
-            _client = redis.Redis.from_url(settings.redis_url, decode_responses=True, socket_connect_timeout=2)
-            _client.ping()
-        except Exception:
-            _client = None
-    return _client
-
-
-def _presence_key(tenant_id: str, user_id: str) -> str:
-    return f"presence:{tenant_id}:{user_id}"
-
-
 def revoke_token_jti(jti: str, exp_timestamp: int) -> None:
-    client = _get_client()
-    if not client:
+    client = get_redis()
+    if client is None:
         return
     now = int(datetime.now(timezone.utc).timestamp())
     ttl = max(1, exp_timestamp - now)
-    client.setex(f"revoked:{jti}", ttl, "1")
+    try:
+        client.setex(f"revoked:{jti}", ttl, "1")
+    except Exception:
+        pass
 
 
 def is_token_revoked(jti: str) -> bool:
-    client = _get_client()
-    if not client:
+    client = get_redis()
+    if client is None:
         return False
-    return client.exists(f"revoked:{jti}") == 1
+    try:
+        return client.exists(f"revoked:{jti}") == 1
+    except Exception:
+        return False
 
 
 def mark_user_online(tenant_id: str, user_id: str, ttl_seconds: int = PRESENCE_TTL_SECONDS) -> None:
-    client = _get_client()
-    if not client:
+    client = get_redis()
+    if client is None:
         return
-    client.setex(_presence_key(tenant_id, user_id), ttl_seconds, "1")
+    try:
+        client.setex(f"presence:{tenant_id}:{user_id}", ttl_seconds, "1")
+    except Exception:
+        pass
 
 
 def mark_user_offline(tenant_id: str, user_id: str) -> None:
-    client = _get_client()
-    if not client:
+    client = get_redis()
+    if client is None:
         return
-    client.delete(_presence_key(tenant_id, user_id))
+    try:
+        client.delete(f"presence:{tenant_id}:{user_id}")
+    except Exception:
+        pass
 
 
 def count_online_users(tenant_id: str) -> int:
-    client = _get_client()
-    if not client:
+    client = get_redis()
+    if client is None:
         return 0
     pattern = f"presence:{tenant_id}:*"
-    return sum(1 for _ in client.scan_iter(match=pattern))
+    try:
+        return sum(1 for _ in client.scan_iter(match=pattern, count=500))
+    except Exception:
+        return 0

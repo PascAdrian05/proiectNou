@@ -1,21 +1,22 @@
 import json
+import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.api.deps import get_current_user
+from app.core.audit import log_action
 from app.core.database import get_session
+from app.core.passkey_store import consume_challenge, store_challenge
 from app.core.security import create_access_token, create_refresh_token
 from app.core.webauthn import (
-    generate_passkey_registration_options,
     generate_passkey_authentication_options,
-    verify_passkey_registration,
+    generate_passkey_registration_options,
     verify_passkey_authentication,
+    verify_passkey_registration,
 )
-from app.core.audit import log_action
 from app.models.credential import Credential
 from app.models.user import User
 
@@ -23,12 +24,9 @@ from app.models.user import User
 router = APIRouter()
 
 
-# In-memory / Redis challenge store (use Redis in production)
-_challenge_store: dict[str, dict] = {}
-
-
 class PasskeyRegistrationBeginResponse(BaseModel):
     """Options to pass to navigator.credentials.create()."""
+
     publicKey: dict
     challenge_id: str
 
@@ -66,6 +64,7 @@ class PasskeyCredentialsResponse(BaseModel):
 
 # === Registration ===
 
+
 @router.post("/passkey/register/begin", response_model=PasskeyRegistrationBeginResponse)
 def begin_passkey_registration(
     request: Request,
@@ -73,7 +72,6 @@ def begin_passkey_registration(
     current_user: User = Depends(get_current_user),
 ) -> PasskeyRegistrationBeginResponse:
     """Begin passkey registration. Returns options for navigator.credentials.create()."""
-    # Get existing credential IDs to exclude duplicates
     existing = session.exec(
         select(Credential).where(Credential.user_id == current_user.id)
     ).all()
@@ -86,16 +84,13 @@ def begin_passkey_registration(
         existing_credential_ids=existing_ids,
     )
 
-    # Store challenge
-    import uuid
-    challenge_id = str(uuid.uuid4())
-    _challenge_store[challenge_id] = {
-        "challenge": challenge,
-        "user_id": str(current_user.id),
-        "type": "registration",
-        "expires_at": datetime.now(timezone.utc).timestamp() + 120,
-    }
-
+    challenge_id = store_challenge(
+        {
+            "challenge": challenge,
+            "user_id": str(current_user.id),
+            "type": "registration",
+        }
+    )
 
     return PasskeyRegistrationBeginResponse(
         publicKey=options,
@@ -111,16 +106,13 @@ def complete_passkey_registration(
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """Complete passkey registration after user creates a credential."""
-    # Get stored challenge
-    stored = _challenge_store.pop(payload.challenge_id, None)
+    stored = consume_challenge(payload.challenge_id)
     if not stored:
         raise HTTPException(status_code=400, detail="Challenge not found or expired")
-    if stored["type"] != "registration":
+    if stored.get("type") != "registration":
         raise HTTPException(status_code=400, detail="Invalid challenge type")
-    if stored["user_id"] != str(current_user.id):
+    if stored.get("user_id") != str(current_user.id):
         raise HTTPException(status_code=403, detail="Challenge belongs to another user")
-    if stored["expires_at"] < datetime.now(timezone.utc).timestamp():
-        raise HTTPException(status_code=400, detail="Challenge expired. Please try again.")
 
     try:
         result = verify_passkey_registration(
@@ -130,7 +122,6 @@ def complete_passkey_registration(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Passkey verification failed: {str(e)}")
 
-    # Save credential
     credential = Credential(
         user_id=current_user.id,
         credential_id=result["credential_id"],
@@ -140,7 +131,6 @@ def complete_passkey_registration(
     )
     session.add(credential)
 
-    # Mark passkey as enabled on user
     current_user.passkey_enabled = True
     session.add(current_user)
     session.commit()
@@ -157,10 +147,11 @@ def complete_passkey_registration(
         details={"credential_id": result["credential_id"][:16]},
     )
 
-    return {"status": "passkey_registered", "credential_id": result["credential_id"]}
+    return {"status": "passkey_registered", "credential_id": str(credential.id)}
 
 
 # === Authentication ===
+
 
 @router.post("/passkey/login/begin", response_model=PasskeyAuthenticationBeginResponse)
 def begin_passkey_authentication(
@@ -172,15 +163,19 @@ def begin_passkey_authentication(
     allowed_credentials = None
 
     if payload.email:
-        # Find user and their credentials
-        user = session.exec(select(User).where(User.email == payload.email)).first()
+        # Email matching is case-insensitive — normalize before lookup.
+        email_normalized = payload.email.strip().lower()
+        user = session.exec(select(User).where(User.email == email_normalized)).first()
         if user:
             existing = session.exec(
                 select(Credential).where(Credential.user_id == user.id)
             ).all()
             if existing:
                 allowed_credentials = [
-                    {"id": cred.credential_id, "transports": json.loads(cred.transports) if cred.transports else []}
+                    {
+                        "id": cred.credential_id,
+                        "transports": json.loads(cred.transports) if cred.transports else [],
+                    }
                     for cred in existing
                 ]
 
@@ -188,13 +183,12 @@ def begin_passkey_authentication(
         allowed_credentials=allowed_credentials,
     )
 
-    import uuid
-    challenge_id = str(uuid.uuid4())
-    _challenge_store[challenge_id] = {
-        "challenge": challenge,
-        "type": "authentication",
-        "expires_at": datetime.now(timezone.utc).timestamp() + 120,
-    }
+    challenge_id = store_challenge(
+        {
+            "challenge": challenge,
+            "type": "authentication",
+        }
+    )
 
     return PasskeyAuthenticationBeginResponse(
         publicKey=options,
@@ -209,15 +203,12 @@ def complete_passkey_authentication(
     session: Session = Depends(get_session),
 ) -> PasskeyAuthenticationCompleteResponse:
     """Complete passkey authentication after user selects a credential."""
-    stored = _challenge_store.pop(payload.challenge_id, None)
+    stored = consume_challenge(payload.challenge_id)
     if not stored:
         raise HTTPException(status_code=400, detail="Challenge not found or expired")
-    if stored["type"] != "authentication":
+    if stored.get("type") != "authentication":
         raise HTTPException(status_code=400, detail="Invalid challenge type")
-    if stored["expires_at"] < datetime.now(timezone.utc).timestamp():
-        raise HTTPException(status_code=400, detail="Challenge expired. Please try again.")
 
-    # Find the credential by ID
     credential_id = payload.credential.get("id", "")
     if not credential_id:
         raise HTTPException(status_code=400, detail="Missing credential ID")
@@ -242,7 +233,6 @@ def complete_passkey_authentication(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Passkey verification failed: {str(e)}")
 
-    # Update sign count and last used
     stored_cred.sign_count = new_sign_count
     stored_cred.last_used_at = datetime.now(timezone.utc)
     session.add(stored_cred)
@@ -269,6 +259,7 @@ def complete_passkey_authentication(
 
 # === List & Delete Credentials ===
 
+
 @router.get("/passkey/credentials", response_model=PasskeyCredentialsResponse)
 def list_passkey_credentials(
     session: Session = Depends(get_session),
@@ -282,7 +273,10 @@ def list_passkey_credentials(
     return PasskeyCredentialsResponse(
         credentials=[
             {
-                "id": cred.credential_id[:16] + "...",
+                # The stable public id is the DB primary key — clients use
+                # this when calling DELETE. The WebAuthn id is not exposed.
+                "id": str(cred.id),
+                "credential_id_preview": cred.credential_id[:16] + "...",
                 "created_at": cred.created_at.isoformat(),
                 "last_used_at": cred.last_used_at.isoformat() if cred.last_used_at else None,
                 "device_name": cred.device_name,
@@ -299,20 +293,29 @@ def delete_passkey_credential(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """Delete a passkey credential."""
-    # We need to search for full credential_id that starts with the given prefix
-    credentials = session.exec(
-        select(Credential).where(
-            Credential.user_id == current_user.id,
-            Credential.credential_id.startswith(credential_id.replace("...", "")),
-        )
-    ).all()
+    """Delete a passkey credential.
 
-    if not credentials:
+    ``credential_id`` is the stable DB primary key (UUID) returned by
+    ``GET /passkey/credentials``. Using a substring prefix of the WebAuthn
+    credential id (as the previous implementation did) could match the
+    wrong credential.
+    """
+    try:
+        cred_uuid = uuid.UUID(credential_id)
+    except (ValueError, TypeError):
         raise HTTPException(status_code=404, detail="Credential not found")
 
-    for cred in credentials:
-        session.delete(cred)
+    credential = session.exec(
+        select(Credential).where(
+            Credential.id == cred_uuid,
+            Credential.user_id == current_user.id,
+        )
+    ).first()
+
+    if not credential:
+        raise HTTPException(status_code=404, detail="Credential not found")
+
+    session.delete(credential)
 
     # Check if user has any remaining credentials
     remaining = session.exec(

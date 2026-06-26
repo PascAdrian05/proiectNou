@@ -98,6 +98,17 @@ def send_test_alert(
             errors.append(f"webhook: {exc}")
 
     if sent == 0:
-        raise HTTPException(status_code=502, detail="; ".join(errors) if errors else "Alert delivery failed")
+        # No channel succeeded — surface the per-channel failures so the
+        # caller can fix the config.
+        raise HTTPException(
+            status_code=502,
+            detail="; ".join(errors) if errors else "Alert delivery failed",
+        )
 
-    return {"status": "sent"}
+    # Partial success — return the status plus per-channel details so the
+    # UI can tell the user which channel(s) failed.
+    return {
+        "status": "sent" if not errors else "partial",
+        "sent": sent,
+        "errors": errors,
+    }

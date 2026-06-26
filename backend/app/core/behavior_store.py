@@ -1,13 +1,17 @@
+"""Behavior-risk event storage backed by the shared Redis client.
+
+The previous implementation used a module-level Redis client created at
+import time, which crashed the process if Redis was unavailable.
+"""
+
+from __future__ import annotations
+
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import redis
+from app.core.redis_client import get_redis
 
-from app.core.config import settings
-
-
-_client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
 
 BEHAVIOR_WINDOW_SECONDS = 300
 BEHAVIOR_HISTORY_SECONDS = 3600
@@ -17,10 +21,18 @@ def _events_key(tenant_id: str, user_id: str) -> str:
     return f"behavior:events:{tenant_id}:{user_id}"
 
 
-def record_behavior_events(tenant_id: str, user_id: str, events: list[dict[str, Any]]) -> None:
+def _client():
+    return get_redis()
+
+
+def record_behavior_events(tenant_id: str, user_id: str, events: list[dict[str, Any]]) -> bool:
+    client = _client()
+    if client is None or not events:
+        return False
     key = _events_key(tenant_id, user_id)
     now = datetime.now(timezone.utc)
 
+    pipe = client.pipeline()
     for event in events:
         payload = {
             "type": str(event.get("type") or "unknown"),
@@ -28,9 +40,13 @@ def record_behavior_events(tenant_id: str, user_id: str, events: list[dict[str, 
             "timestamp": event.get("timestamp") or now.isoformat(),
             "meta": event.get("meta") or {},
         }
-        _client.rpush(key, json.dumps(payload))
-
-    _client.expire(key, BEHAVIOR_HISTORY_SECONDS)
+        pipe.rpush(key, json.dumps(payload))
+    pipe.expire(key, BEHAVIOR_HISTORY_SECONDS)
+    try:
+        pipe.execute()
+        return True
+    except Exception:
+        return False
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -46,13 +62,18 @@ def _parse_timestamp(value: Any) -> datetime | None:
 
 
 def get_behavior_events(tenant_id: str, user_id: str, window_seconds: int = BEHAVIOR_WINDOW_SECONDS) -> list[dict[str, Any]]:
+    client = _client()
+    if client is None:
+        return []
     key = _events_key(tenant_id, user_id)
-    raw_events = _client.lrange(key, 0, -1)
+    try:
+        raw_events = client.lrange(key, 0, -1)
+    except Exception:
+        return []
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
     events: list[dict[str, Any]] = []
 
     for raw_event in raw_events:
-      
         try:
             event = json.loads(raw_event)
         except Exception:

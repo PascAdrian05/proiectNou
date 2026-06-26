@@ -8,18 +8,19 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-import redis as sync_redis
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.core.cache import cache_delete_pattern
 from app.core.config import settings
 from app.core.database import engine
+from app.core.redis_client import get_redis
 from app.models.alert import Alert
 from app.models.finding import Finding
 from app.models.scan_run import ScanRun
 from app.models.tenant import Tenant
 from app.models.website import Website
 from app.tasks.celery_app import celery_app
+
 
 SECURITY_HEADERS = [
     "strict-transport-security",
@@ -34,21 +35,37 @@ STEPS = ["uptime", "ssl_expiry", "security_headers", "open_ports"]
 
 
 def _publish_event(channel: str, event: dict[str, Any]) -> None:
+    """Publish a real-time event over the shared Redis pub/sub channel.
+
+    Uses the pooled Redis client (one TCP connection per worker, no
+    per-call ``from_url`` overhead). Publish failures must never propagate
+    out of the scan pipeline.
+    """
+    client = get_redis()
+    if client is None:
+        return
     try:
-        r = sync_redis.from_url(settings.redis_url, decode_responses=True)
-        r.publish(channel, json.dumps(event))
-        r.close()
+        client.publish(channel, json.dumps(event))
     except Exception:
         pass
 
 
-def _update_progress(session: Session, scan_run_id: UUID, step: str | None, status: str, step_status: str | None = None, progress: dict[str, Any] | None = None, tenant_id: str | None = None, user_id: str | None = None) -> None:
+def _update_progress(
+    session: Session,
+    scan_run_id: UUID,
+    step: str | None,
+    status: str,
+    step_status: str | None = None,
+    progress: dict[str, Any] | None = None,
+    tenant_id: str | None = None,
+    user_id: str | None = None,
+) -> None:
     scan_run = session.get(ScanRun, scan_run_id)
     if not scan_run:
         return
     scan_run.current_step = step
     if progress:
-        existing = {}
+        existing: dict[str, Any] = {}
         if scan_run.progress:
             try:
                 existing = json.loads(scan_run.progress)
@@ -56,9 +73,7 @@ def _update_progress(session: Session, scan_run_id: UUID, step: str | None, stat
                 existing = {}
         existing.update(progress)
         if step_status and step:
-            if "step_statuses" not in existing:
-                existing["step_statuses"] = {}
-            existing["step_statuses"][step] = step_status
+            existing.setdefault("step_statuses", {})[step] = step_status
         scan_run.progress = json.dumps(existing)
     scan_run.status = status
     if status == "running" and not scan_run.started_at:
@@ -66,17 +81,20 @@ def _update_progress(session: Session, scan_run_id: UUID, step: str | None, stat
     session.add(scan_run)
     session.commit()
 
-    _publish_event("scan:progress", {
-        "type": "scan_progress",
-        "scan_run_id": str(scan_run_id),
-        "step": step,
-        "status": status,
-        "step_status": step_status,
-        "progress": progress,
-        "tenant_id": tenant_id,
-        "user_id": user_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
+    _publish_event(
+        "scan:progress",
+        {
+            "type": "scan_progress",
+            "scan_run_id": str(scan_run_id),
+            "step": step,
+            "status": status,
+            "step_status": step_status,
+            "progress": progress,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
 
 
 def _perform_uptime_check(url: str) -> dict[str, Any]:
@@ -192,7 +210,12 @@ def _dispatch_alerts(session: Session, tenant: Tenant, findings_created: list[di
             try:
                 _send_webhook(
                     tenant.alert_webhook_url,
-                    {"tenant_id": str(tenant.id), "severity": finding["severity"], "kind": finding["kind"], "details": finding["data"]},
+                    {
+                        "tenant_id": str(tenant.id),
+                        "severity": finding["severity"],
+                        "kind": finding["kind"],
+                        "details": finding["data"],
+                    },
                 )
                 alert.status = "sent"
                 alert.sent_at = datetime.now(timezone.utc)
@@ -224,9 +247,15 @@ def _dispatch_alerts(session: Session, tenant: Tenant, findings_created: list[di
 
 
 @celery_app.task(name="scan.run_full_scan", bind=True, max_retries=2, default_retry_delay=30)
-def run_full_scan(self, scan_run_id: str, website_id: str, url: str, domain: str, tenant_id: str, user_id: str | None = None) -> dict[str, Any]:
-    import time as _time
-
+def run_full_scan(
+    self,
+    scan_run_id: str,
+    website_id: str,
+    url: str,
+    domain: str,
+    tenant_id: str,
+    user_id: str | None = None,
+) -> dict[str, Any]:
     scan_run_uuid = UUID(scan_run_id)
     website_uuid = UUID(website_id)
     tenant_uuid = UUID(tenant_id)
@@ -238,30 +267,44 @@ def run_full_scan(self, scan_run_id: str, website_id: str, url: str, domain: str
         if not scan_run or not website or not tenant:
             return {"status": "failed", "reason": "scan context not found"}
 
-        _update_progress(session, scan_run_uuid, None, "running", step_status=None, progress={"steps_completed": 0, "total_steps": len(STEPS)}, tenant_id=str(tenant_uuid), user_id=user_id)
+        _update_progress(
+            session,
+            scan_run_uuid,
+            None,
+            "running",
+            step_status=None,
+            progress={"steps_completed": 0, "total_steps": len(STEPS)},
+            tenant_id=str(tenant_uuid),
+            user_id=user_id,
+        )
 
     checks: dict[str, dict[str, Any]] = {}
     step_statuses: dict[str, str] = {}
     findings_created: list[dict[str, Any]] = []
     headers_from_uptime: dict[str, Any] = {}
 
-    STEP_MIN_SECONDS = 8  # each step appears to take at least this long on the frontend
-
     def run_step(step_name: str) -> tuple[str, dict[str, Any], str]:
-        t0 = _time.monotonic()
         step_index = STEPS.index(step_name)
         try:
-            _publish_event("scan:progress", {
-                "type": "scan_progress",
-                "scan_run_id": str(scan_run_uuid),
-                "step": step_name,
-                "status": "running",
-                "step_status": "active",
-                "progress": {"steps_completed": step_index, "total_steps": len(STEPS), "current_check": step_name, "step_progress": 0},
-                "tenant_id": tenant_id,
-                "user_id": user_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            _publish_event(
+                "scan:progress",
+                {
+                    "type": "scan_progress",
+                    "scan_run_id": str(scan_run_uuid),
+                    "step": step_name,
+                    "status": "running",
+                    "step_status": "active",
+                    "progress": {
+                        "steps_completed": step_index,
+                        "total_steps": len(STEPS),
+                        "current_check": step_name,
+                        "step_progress": 0,
+                    },
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
 
             if step_name == "uptime":
                 result = _perform_uptime_check(url)
@@ -269,11 +312,20 @@ def run_full_scan(self, scan_run_id: str, website_id: str, url: str, domain: str
                 result = _perform_ssl_check(domain)
                 if not result.get("valid") and isinstance(result.get("error"), str):
                     err_lower = result["error"].lower()
-                    if any(word in err_lower for word in ["refused", "timeout", "connection closed", "no route", "eof occurred", "certificate verify failed"]):
+                    if any(
+                        word in err_lower
+                        for word in [
+                            "refused",
+                            "timeout",
+                            "connection closed",
+                            "no route",
+                            "eof occurred",
+                            "certificate verify failed",
+                        ]
+                    ):
                         result["no_access"] = True
             elif step_name == "security_headers":
-                headers_from_uptime_local = headers_from_uptime
-                result = _perform_headers_check(headers_from_uptime_local)
+                result = _perform_headers_check(headers_from_uptime)
             elif step_name == "open_ports":
                 result = _perform_ports_check(domain)
                 if not result.get("open_ports"):
@@ -281,46 +333,27 @@ def run_full_scan(self, scan_run_id: str, website_id: str, url: str, domain: str
             else:
                 return step_name, {"error": f"unknown step: {step_name}"}, "error"
 
-            elapsed = _time.monotonic() - t0
-            if elapsed < STEP_MIN_SECONDS:
-                remaining = STEP_MIN_SECONDS - elapsed
-                # Publish granular progress every ~1.5s during the wait
-                increments = max(1, int(remaining / 1.5))
-                for i in range(increments):
-                    _time.sleep(remaining / increments)
-                    step_progress_pct = min(95, int(((i + 1) / increments) * 100))
-                    _publish_event("scan:progress", {
-                        "type": "scan_progress",
-                        "scan_run_id": str(scan_run_uuid),
-                        "step": step_name,
-                        "status": "running",
-                        "step_status": "active",
-                        "progress": {
-                            "steps_completed": step_index,
-                            "total_steps": len(STEPS),
-                            "current_check": step_name,
-                            "step_progress": step_progress_pct,
-                        },
-                        "tenant_id": tenant_id,
-                        "user_id": user_id,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    })
-
             step_status = "no_access" if result.get("no_access") else "success"
 
             with Session(engine) as step_session:
-                _update_progress(step_session, scan_run_uuid, step_name, "running", step_status=step_status, progress={
-                    "steps_completed": step_index + 1,
-                    "total_steps": len(STEPS),
-                    "current_check": step_name,
-                    "step_progress": 100,
-                }, tenant_id=tenant_id, user_id=user_id)
+                _update_progress(
+                    step_session,
+                    scan_run_uuid,
+                    step_name,
+                    "running",
+                    step_status=step_status,
+                    progress={
+                        "steps_completed": step_index + 1,
+                        "total_steps": len(STEPS),
+                        "current_check": step_name,
+                        "step_progress": 100,
+                    },
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                )
 
             return step_name, result, step_status
         except Exception as exc:
-            elapsed = _time.monotonic() - t0
-            if elapsed < STEP_MIN_SECONDS:
-                _time.sleep(STEP_MIN_SECONDS - elapsed)
             return step_name, {"error": str(exc)}, "error"
 
     try:
@@ -334,7 +367,7 @@ def run_full_scan(self, scan_run_id: str, website_id: str, url: str, domain: str
         with Session(engine) as session:
             if not session.get(ScanRun, scan_run_uuid):
                 return {"status": "failed", "error": "ScanRun not found in DB session"}
-            
+
             current_detected_kinds = set()
             for kind, data in checks.items():
                 if not _needs_finding(kind, data):
@@ -351,21 +384,41 @@ def run_full_scan(self, scan_run_id: str, website_id: str, url: str, domain: str
                 )
                 session.add(finding)
                 session.flush()
-                findings_created.append({"id": finding.id, "severity": severity, "kind": kind, "data": data})
+                findings_created.append(
+                    {"id": finding.id, "severity": severity, "kind": kind, "data": data}
+                )
                 current_detected_kinds.add(kind)
 
-            old_findings = session.exec(
-                select(Finding).where(
-                    Finding.tenant_id == tenant_uuid,
-                    Finding.website_id == website_uuid,
-                    Finding.status == "open",
-                    Finding.id.not_in([f["id"] for f in findings_created]) if findings_created else True,
-                )
-            ).all()
+            # Auto-resolve any open findings whose kind is no longer detected.
+            if findings_created:
+                still_open_ids = {f["id"] for f in findings_created}
+                old_findings = session.exec(
+                    select(Finding).where(
+                        Finding.tenant_id == tenant_uuid,
+                        Finding.website_id == website_uuid,
+                        Finding.status == "open",
+                        Finding.id.not_in(still_open_ids),
+                    )
+                ).all()
+            else:
+                old_findings = session.exec(
+                    select(Finding).where(
+                        Finding.tenant_id == tenant_uuid,
+                        Finding.website_id == website_uuid,
+                        Finding.status == "open",
+                    )
+                ).all()
+
             for old in old_findings:
                 if old.kind not in current_detected_kinds:
                     old.status = "resolved"
-                    old.details_json = json.dumps({"resolved_by": "auto", "previous_kind": old.kind, "resolution": "No longer detected"})
+                    old.details_json = json.dumps(
+                        {
+                            "resolved_by": "auto",
+                            "previous_kind": old.kind,
+                            "resolution": "No longer detected",
+                        }
+                    )
                     session.add(old)
 
             scan_run = session.get(ScanRun, scan_run_uuid)
@@ -374,33 +427,49 @@ def run_full_scan(self, scan_run_id: str, website_id: str, url: str, domain: str
             scan_run.completed_at = datetime.now(timezone.utc)
             scan_run.result_json = json.dumps(checks)
             scan_run.current_step = None
-            scan_run.progress = json.dumps({"steps_completed": len(STEPS), "total_steps": len(STEPS), "current_check": None, "step_statuses": step_statuses})
+            scan_run.progress = json.dumps(
+                {
+                    "steps_completed": len(STEPS),
+                    "total_steps": len(STEPS),
+                    "current_check": None,
+                    "step_statuses": step_statuses,
+                }
+            )
             website.last_scan_at = datetime.now(timezone.utc)
             session.add(scan_run)
             session.add(website)
             session.commit()
 
             _dispatch_alerts(session, tenant, findings_created)
-
             session.commit()
 
             cache_delete_pattern(f"scanruns:{tenant_id}")
             cache_delete_pattern(f"findings:{tenant_id}")
             cache_delete_pattern(f"alerts:{tenant_id}")
 
-            _publish_event("scan:completed", {
-                "type": "scan_completed",
-                "scan_run_id": str(scan_run_uuid),
-                "website_id": str(website_uuid),
-                "tenant_id": str(tenant_uuid),
-                "user_id": user_id,
-                "status": "completed",
-                "findings_count": len(findings_created),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            _publish_event(
+                "scan:completed",
+                {
+                    "type": "scan_completed",
+                    "scan_run_id": str(scan_run_uuid),
+                    "website_id": str(website_uuid),
+                    "tenant_id": str(tenant_uuid),
+                    "user_id": user_id,
+                    "status": "completed",
+                    "findings_count": len(findings_created),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
 
-            from app.tasks.ai_tasks import run_post_scan_analysis
-            run_post_scan_analysis.delay(str(scan_run_uuid), str(tenant_uuid))
+            # Run the AI follow-up in the background — the scan itself is
+            # already done and the user should not wait for the model.
+            try:
+                from app.tasks.ai_tasks import run_post_scan_analysis
+
+                run_post_scan_analysis.delay(str(scan_run_uuid), str(tenant_uuid))
+            except Exception:
+                # If the AI worker is down the user still has a valid result.
+                pass
 
             return {"status": "completed", "findings_created": len(findings_created)}
 
@@ -415,14 +484,17 @@ def run_full_scan(self, scan_run_id: str, website_id: str, url: str, domain: str
                 session.add(scan_run)
                 session.commit()
 
-        _publish_event("scan:completed", {
-            "type": "scan_completed",
-            "scan_run_id": str(scan_run_uuid),
-            "tenant_id": str(tenant_uuid),
-            "user_id": user_id,
-            "status": "failed",
-            "error": str(exc),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        _publish_event(
+            "scan:completed",
+            {
+                "type": "scan_completed",
+                "scan_run_id": str(scan_run_uuid),
+                "tenant_id": str(tenant_uuid),
+                "user_id": user_id,
+                "status": "failed",
+                "error": str(exc),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
         return {"status": "failed", "error": str(exc)}

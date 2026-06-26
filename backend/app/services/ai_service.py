@@ -1,63 +1,181 @@
+"""AI service backed by Groq.
+
+The previous implementation called ``Groq.chat.completions.create`` from
+``async`` methods, which blocks the event loop while waiting for the
+network. This module uses :class:`AsyncGroq` and the SDK's native
+``await chat.completions.create`` instead, so the FastAPI event loop can
+keep serving other requests while the model is responding.
+"""
+
+from __future__ import annotations
+
 import json
-import os
-from groq import Groq
+import asyncio
+from typing import Any
+
+from groq import AsyncGroq, Groq
+
 from app.core.config import settings
 
 
+# System prompts — kept as constants so they're easier to tweak and so the
+# hot path (analyze/tips/etc.) stays clean.
+_SYSTEM_PROMPT_FINDING = (
+    "You are a cybersecurity expert assistant. "
+    "Provide clear, actionable advice about security findings. "
+    "Be concise but thorough. Always include a confidence level (high/medium/low). "
+    "Format your response as JSON with keys: summary, severity_assessment, recommendation, confidence, references."
+)
+
+_SYSTEM_PROMPT_TIPS = (
+    "You are a helpful cybersecurity advisor. "
+    "Provide practical, prioritized security recommendations. "
+    "Be encouraging but honest about risks. "
+    "Format response as JSON."
+)
+
+_SYSTEM_PROMPT_VERIFY = (
+    "You are a security posture verification expert. "
+    "Provide honest assessments with clear confidence levels. "
+    "Be transparent about limitations of automated scanning. "
+    "Format response as JSON."
+)
+
+_SYSTEM_PROMPT_INSIGHTS = (
+    "You are a proactive security advisor. "
+    "Anticipate potential issues and provide forward-thinking recommendations. "
+    "Be specific about actions and prioritize by impact vs effort. "
+    "Format response as JSON."
+)
+
+_SYSTEM_PROMPT_AUTOFIX = (
+    "You are a senior DevOps / security engineer. "
+    "Generate a concrete, copy-paste-ready fix for the given security issue. "
+    "Always include exact configuration or commands. "
+    "Format response as JSON with keys: "
+    "summary (short description), "
+    "fix_type (nginx_config/apache_config/firewall_rule/dns_change/code_change/other), "
+    "steps (array of step objects with title and command_or_code), "
+    "risk_level (low/medium/high), "
+    "estimated_effort (minutes), "
+    "rollback_instructions (string)."
+)
+
+
+_MODEL = "llama-3.3-70b-versatile"
+
+
 class AIService:
-    def __init__(self):
-        self.client = Groq(api_key=settings.groq_api_key) if settings.groq_api_key else None
+    def __init__(self) -> None:
+        self._api_key = settings.groq_api_key
+        self._async_client: AsyncGroq | None = None
+        self._sync_client: Groq | None = None
+
+    @property
+    def async_client(self) -> AsyncGroq | None:
+        if not self._api_key:
+            return None
+        if self._async_client is None:
+            self._async_client = AsyncGroq(api_key=self._api_key)
+        return self._async_client
+
+    @property
+    def sync_client(self) -> Groq | None:
+        # Used by Celery tasks where there is no running event loop.
+        if not self._api_key:
+            return None
+        if self._sync_client is None:
+            self._sync_client = Groq(api_key=self._api_key)
+        return self._sync_client
 
     def is_available(self) -> bool:
-        return self.client is not None
+        return bool(self._api_key)
 
-    async def analyze_finding(self, finding: dict, context: dict | None = None) -> dict:
-        if not self.is_available():
+    async def _chat_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        temperature: float,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        """Run a chat completion that returns a JSON object."""
+        client = self.async_client
+        if client is None:
             return {
                 "available": False,
                 "message": "AI assistant is not configured. Please add GROQ_API_KEY to enable smart insights.",
             }
 
-        prompt = self._build_finding_prompt(finding, context)
-
         try:
-            response = self.client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+            response = await client.chat.completions.create(
+                model=_MODEL,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a cybersecurity expert assistant. "
-                            "Provide clear, actionable advice about security findings. "
-                            "Be concise but thorough. Always include a confidence level (high/medium/low). "
-                            "Format your response as JSON with keys: summary, severity_assessment, recommendation, confidence, references."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.3,
-                max_tokens=1024,
+                temperature=temperature,
+                max_tokens=max_tokens,
                 response_format={"type": "json_object"},
             )
-
-            content = response.choices[0].message.content
-            result = json.loads(content)
-            result["available"] = True
-            return result
-
         except Exception as exc:
+            return {"available": False, "message": f"AI request failed: {exc}"}
+
+        try:
+            content = response.choices[0].message.content or "{}"
+            result = json.loads(content)
+        except (json.JSONDecodeError, IndexError, AttributeError) as exc:
+            return {"available": False, "message": f"AI returned invalid JSON: {exc}"}
+
+        result["available"] = True
+        return result
+
+    def _chat_json_sync(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        temperature: float,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        """Synchronous variant for Celery tasks (no running event loop)."""
+        client = self.sync_client
+        if client is None:
             return {
                 "available": False,
-                "message": f"AI analysis failed: {str(exc)}",
+                "message": "AI assistant is not configured. Please add GROQ_API_KEY to enable smart insights.",
             }
+
+        try:
+            response = client.chat.completions.create(
+                model=_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:
+            return {"available": False, "message": f"AI request failed: {exc}"}
+
+        try:
+            content = response.choices[0].message.content or "{}"
+            result = json.loads(content)
+        except (json.JSONDecodeError, IndexError, AttributeError) as exc:
+            return {"available": False, "message": f"AI returned invalid JSON: {exc}"}
+
+        result["available"] = True
+        return result
+
+    async def analyze_finding(self, finding: dict, context: dict | None = None) -> dict:
+        prompt = self._build_finding_prompt(finding, context)
+        return await self._chat_json(
+            _SYSTEM_PROMPT_FINDING, prompt, temperature=0.3, max_tokens=1024
+        )
 
     async def get_security_tips(self, websites: list[dict], findings: list[dict]) -> dict:
-        if not self.is_available():
-            return {
-                "available": False,
-                "message": "AI assistant is not configured.",
-            }
-
         prompt = (
             "Based on the following security monitoring data, provide 3-5 prioritized, actionable security tips. "
             "Consider the websites monitored and the findings detected. "
@@ -65,45 +183,9 @@ class AIService:
             f"\n\nWebsites: {[w.get('domain') for w in websites]}"
             f"\nFindings summary: {len(findings)} total findings"
         )
-
-        try:
-            response = self.client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a helpful cybersecurity advisor. "
-                            "Provide practical, prioritized security recommendations. "
-                            "Be encouraging but honest about risks. "
-                            "Format response as JSON."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.4,
-                max_tokens=1024,
-                response_format={"type": "json_object"},
-            )
-
-            content = response.choices[0].message.content
-            result = json.loads(content)
-            result["available"] = True
-            return result
-
-        except Exception as exc:
-            return {
-                "available": False,
-                "message": f"Could not generate tips: {str(exc)}",
-            }
+        return await self._chat_json(_SYSTEM_PROMPT_TIPS, prompt, temperature=0.4, max_tokens=1024)
 
     async def verify_security_posture(self, websites: list[dict], findings: list[dict]) -> dict:
-        if not self.is_available():
-            return {
-                "available": False,
-                "message": "AI assistant is not configured.",
-            }
-
         critical = [f for f in findings if str(f.get("severity", "")).lower() == "critical"]
         high = [f for f in findings if str(f.get("severity", "")).lower() == "high"]
 
@@ -117,56 +199,16 @@ class AIService:
             f"\nHigh findings: {len(high)}"
             f"\nTotal findings: {len(findings)}"
         )
-
-        try:
-            response = self.client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a security posture verification expert. "
-                            "Provide honest assessments with clear confidence levels. "
-                            "Be transparent about limitations of automated scanning. "
-                            "Format response as JSON."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-                max_tokens=1024,
-                response_format={"type": "json_object"},
-            )
-
-            content = response.choices[0].message.content
-            result = json.loads(content)
-            result["available"] = True
-            return result
-
-        except Exception as exc:
-            return {
-                "available": False,
-                "message": f"Verification failed: {str(exc)}",
-            }
+        return await self._chat_json(_SYSTEM_PROMPT_VERIFY, prompt, temperature=0.3, max_tokens=1024)
 
     async def get_proactive_insights(self, websites: list[dict], findings: list[dict]) -> dict:
-        """Generate proactive AI insights and recommendations."""
-        if not self.is_available():
-            return {
-                "available": False,
-                "message": "AI assistant is not configured.",
-            }
-
         critical = [f for f in findings if str(f.get("severity", "")).lower() == "critical"]
         high = [f for f in findings if str(f.get("severity", "")).lower() == "high"]
-        
-        # Group findings by type
-        findings_by_type = {}
+
+        findings_by_type: dict[str, list] = {}
         for f in findings:
             kind = f.get("kind", "unknown")
-            if kind not in findings_by_type:
-                findings_by_type[kind] = []
-            findings_by_type[kind].append(f)
+            findings_by_type.setdefault(kind, []).append(f)
 
         prompt = (
             "Analyze the current security posture and provide proactive, actionable insights. "
@@ -181,38 +223,12 @@ class AIService:
             f"\nTotal open findings: {len(findings)}"
             f"\nFinding types: {list(findings_by_type.keys())}"
         )
-
-        try:
-            response = self.client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a proactive security advisor. "
-                            "Anticipate potential issues and provide forward-thinking recommendations. "
-                            "Be specific about actions and prioritize by impact vs effort. "
-                            "Format response as JSON."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.4,
-                max_tokens=1536,
-                response_format={"type": "json_object"},
-            )
-
-            content = response.choices[0].message.content
-            result = json.loads(content)
-            result["available"] = True
+        result = await self._chat_json(
+            _SYSTEM_PROMPT_INSIGHTS, prompt, temperature=0.4, max_tokens=1536
+        )
+        if result.get("available"):
             result["generated_at"] = "now"
-            return result
-
-        except Exception as exc:
-            return {
-                "available": False,
-                "message": f"Could not generate proactive insights: {str(exc)}",
-            }
+        return result
 
     async def auto_fix_finding(self, finding: dict, context: dict | None = None) -> dict:
         if not self.is_available():
@@ -231,44 +247,50 @@ class AIService:
             details_parsed = {}
 
         prompt = self._build_autofix_prompt(kind, details_parsed, website)
-
-        try:
-            response = self.client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a senior DevOps / security engineer. "
-                            "Generate a concrete, copy-paste-ready fix for the given security issue. "
-                            "Always include exact configuration or commands. "
-                            "Format response as JSON with keys: "
-                            "summary (short description), "
-                            "fix_type (nginx_config/apache_config/firewall_rule/dns_change/code_change/other), "
-                            "steps (array of step objects with title and command_or_code), "
-                            "risk_level (low/medium/high), "
-                            "estimated_effort (minutes), "
-                            "rollback_instructions (string)."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.2,
-                max_tokens=1536,
-                response_format={"type": "json_object"},
-            )
-
-            content = response.choices[0].message.content
-            result = json.loads(content)
-            result["available"] = True
+        result = await self._chat_json(
+            _SYSTEM_PROMPT_AUTOFIX, prompt, temperature=0.2, max_tokens=1536
+        )
+        if result.get("available"):
             result["finding_id"] = str(finding.get("id", ""))
-            return result
+        return result
 
-        except Exception as exc:
-            return {
-                "available": False,
-                "message": f"Auto-fix generation failed: {str(exc)}",
-            }
+    # --- sync variants for Celery -----------------------------------------
+
+    def analyze_finding_sync(self, finding: dict, context: dict | None = None) -> dict:
+        return self._chat_json_sync(
+            _SYSTEM_PROMPT_FINDING,
+            self._build_finding_prompt(finding, context),
+            temperature=0.3,
+            max_tokens=1024,
+        )
+
+    def get_security_tips_sync(self, websites: list[dict], findings: list[dict]) -> dict:
+        prompt = (
+            "Based on the following security monitoring data, provide 3-5 prioritized, actionable security tips. "
+            "Consider the websites monitored and the findings detected. "
+            "Format as JSON with keys: tips (array of objects with priority, title, description, effort), overall_health_score (0-100)."
+            f"\n\nWebsites: {[w.get('domain') for w in websites]}"
+            f"\nFindings summary: {len(findings)} total findings"
+        )
+        return self._chat_json_sync(_SYSTEM_PROMPT_TIPS, prompt, temperature=0.4, max_tokens=1024)
+
+    def auto_fix_finding_sync(self, finding: dict, context: dict | None = None) -> dict:
+        kind = finding.get("kind", "unknown")
+        details = finding.get("details_json", "{}")
+        website = (context or {}).get("website", "your-site.com")
+        try:
+            details_parsed = json.loads(details) if isinstance(details, str) else details
+        except (json.JSONDecodeError, TypeError):
+            details_parsed = {}
+        result = self._chat_json_sync(
+            _SYSTEM_PROMPT_AUTOFIX,
+            self._build_autofix_prompt(kind, details_parsed, website),
+            temperature=0.2,
+            max_tokens=1536,
+        )
+        if result.get("available"):
+            result["finding_id"] = str(finding.get("id", ""))
+        return result
 
     def _build_autofix_prompt(self, kind: str, details: dict, website: str) -> str:
         prompts = {
@@ -297,11 +319,10 @@ class AIService:
                 "Include verification with nmap or netstat."
             ),
         }
-
         return prompts.get(
             kind,
             f"Security finding type '{kind}' on {website}. Details: {json.dumps(details)}. "
-            "Generate the most appropriate fix with exact commands or config."
+            "Generate the most appropriate fix with exact commands or config.",
         )
 
     def _build_finding_prompt(self, finding: dict, context: dict | None = None) -> str:
@@ -312,11 +333,8 @@ class AIService:
             f"Type: {finding.get('kind', 'N/A')}",
             f"Details: {finding.get('details_json', 'N/A')}",
         ]
-
-        if context:
-            if context.get("website"):
-                parts.append(f"Website: {context['website']}")
-
+        if context and context.get("website"):
+            parts.append(f"Website: {context['website']}")
         return "\n".join(parts)
 
 

@@ -18,7 +18,6 @@ function LoginPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
-  // 2FA state
   const [pendingToken, setPendingToken] = useState(null);
   const [code, setCode] = useState(Array(CODE_LENGTH).fill(""));
   const [focusedIdx, setFocusedIdx] = useState(0);
@@ -154,141 +153,135 @@ function LoginPage() {
 
   if (pendingToken) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-base-300 via-base-200 to-base-300">
-        <div className="card w-full max-w-md bg-base-100 shadow-2xl">
-          <div className="card-body items-center text-center p-8">
-            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-              <KeyRound className="w-8 h-8 text-primary" />
-            </div>
-            <h2 className="text-2xl font-bold">Verificare in 2 pasi</h2>
-            <p className="text-base-content/60 mt-1">
-              Introdu codul din aplicatia de autentificare
-            </p>
-            <div className="flex gap-3 mt-6" onPaste={handleCodePaste}>
-              {code.map((digit, index) => (
-                <input
-                  key={index}
-                  ref={(el) => (inputRefs.current[index] = el)}
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={1}
-                  value={digit}
-                  onChange={(e) => handleCodeChange(index, e.target.value)}
-                  onKeyDown={(e) => handleCodeKeyDown(index, e)}
-                  onFocus={() => setFocusedIdx(index)}
-                  className={`w-12 h-14 text-center text-2xl font-bold rounded-lg border-2 bg-base-200 transition-all duration-150 outline-none
-                    ${focusedIdx === index ? "border-primary ring-2 ring-primary/30 scale-105" : "border-base-300"}
-                    ${code[index] ? "border-primary" : ""}`}
-                />
-              ))}
-            </div>
-            <p className="text-xs text-base-content/40 mt-4">Codul se trimite automat</p>
-            <button
-              onClick={() => { setPendingToken(null); setCode(Array(CODE_LENGTH).fill("")); setLoginError(""); }}
-              className="btn btn-ghost btn-sm mt-4"
-            >
-              Inapoi la login
-            </button>
+      <div className="auth-shell">
+        <div className="auth-card">
+          <div className="auth-icon">
+            <KeyRound size={28} strokeWidth={2} aria-hidden="true" />
           </div>
+          <h1>Verificare in 2 pasi</h1>
+          <p className="hint">Introdu codul din aplicatia de autentificare</p>
+          <div className="code-grid" onPaste={handleCodePaste}>
+            {code.map((digit, index) => (
+              <input
+                key={index}
+                ref={(el) => (inputRefs.current[index] = el)}
+                type="text"
+                inputMode="numeric"
+                maxLength={1}
+                value={digit}
+                onChange={(e) => handleCodeChange(index, e.target.value)}
+                onKeyDown={(e) => handleCodeKeyDown(index, e)}
+                onFocus={() => setFocusedIdx(index)}
+                className={[
+                  focusedIdx === index ? "active" : "",
+                  digit ? "has-value" : "",
+                ].filter(Boolean).join(" ")}
+                aria-label={`Cifra ${index + 1}`}
+              />
+            ))}
+          </div>
+          <p className="hint" style={{ marginTop: "0.7rem", fontSize: "0.8rem" }}>
+            Codul se trimite automat
+          </p>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => { setPendingToken(null); setCode(Array(CODE_LENGTH).fill("")); setLoginError(""); }}
+            style={{ marginTop: "0.8rem" }}
+          >
+            Inapoi la login
+          </button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-base-300 via-base-200 to-base-300 p-4">
-      <div className="card w-full max-w-md bg-base-100 shadow-2xl">
-        <div className="card-body p-8">
-          <div className="text-center mb-6">
-            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
-              <Shield className="w-8 h-8 text-primary" />
-            </div>
-            <h1 className="text-3xl font-bold">Guardian</h1>
-            <p className="text-base-content/60 mt-1">Platforma de securitate cibernetica</p>
-          </div>
+    <div className="auth-shell">
+      <div className="auth-card">
+        <div className="auth-icon">
+          <Shield size={28} strokeWidth={2} aria-hidden="true" />
+        </div>
+        <h1>Guardian</h1>
+        <p className="hint" style={{ textAlign: "center", marginBottom: "1.5rem" }}>
+          Platforma de securitate cibernetica
+        </p>
 
-          <form onSubmit={handleLogin} className="space-y-4">
-            <label className="form-control">
-              <div className="label">
-                <span className="label-text">Email</span>
-              </div>
+        <form onSubmit={handleLogin} className="form-grid">
+          <label>
+            Email
+            <input
+              type="email"
+              placeholder="nume@exemplu.ro"
+              value={email}
+              onChange={(e) => { setEmail(e.target.value); setLoginError(""); }}
+              autoComplete="email"
+              required
+              disabled={loading}
+            />
+          </label>
+
+          <label>
+            Parola
+            <div className="password-field">
               <input
-                type="email"
-                placeholder="nume@exemplu.ro"
-                className="input input-bordered w-full"
-                value={email}
-                onChange={(e) => { setEmail(e.target.value); setLoginError(""); }}
-                autoComplete="email"
+                type={showPassword ? "text" : "password"}
+                placeholder="Parola ta"
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); setLoginError(""); }}
+                autoComplete="current-password"
                 required
                 disabled={loading}
               />
-            </label>
+              <button
+                type="button"
+                className="password-toggle"
+                onClick={() => setShowPassword(!showPassword)}
+                tabIndex={-1}
+                aria-label={showPassword ? "Ascunde parola" : "Afiseaza parola"}
+              >
+                {showPassword ? <EyeOff size={16} strokeWidth={2} /> : <Eye size={16} strokeWidth={2} />}
+              </button>
+            </div>
+          </label>
 
-            <label className="form-control">
-              <div className="label">
-                <span className="label-text">Parola</span>
-              </div>
-              <div className="join w-full">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  placeholder="Parola ta"
-                  className="input input-bordered join-item w-full"
-                  value={password}
-                  onChange={(e) => { setPassword(e.target.value); setLoginError(""); }}
-                  autoComplete="current-password"
-                  required
-                  disabled={loading}
-                />
-                <button
-                  type="button"
-                  className="btn btn-square join-item btn-outline"
-                  onClick={() => setShowPassword(!showPassword)}
-                  tabIndex={-1}
-                >
-                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                </button>
-              </div>
-            </label>
+          {loginError && (
+            <p className="error-text" style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+              <Lock size={14} strokeWidth={2} aria-hidden="true" />
+              <span>{loginError}</span>
+            </p>
+          )}
 
-            {loginError && (
-              <div className="alert alert-error text-sm p-3">
-                <Lock className="w-4 h-4 shrink-0" />
-                <span>{loginError}</span>
-              </div>
-            )}
+          <button type="submit" disabled={loading} className="auth-submit">
+            {loading ? "Se proceseaza..." : "Intra in cont"}
+          </button>
+        </form>
 
-            <button type="submit" className="btn btn-primary w-full" disabled={loading}>
-              {loading ? <span className="loading loading-spinner" /> : null}
-              {loading ? "Se proceseaza..." : "Intra in cont"}
-            </button>
-          </form>
-
-          <div className="divider my-6 text-xs text-base-content/40">sau</div>
-
-          <div className="space-y-2">
-            {["google", "github", "linkedin"].map((provider) => {
-              const Icon = providerIcons?.[provider];
-              return (
-                <button
-                  key={provider}
-                  onClick={() => handleOAuth(provider)}
-                  disabled={loading}
-                  className="btn btn-outline w-full gap-3"
-                >
-                  {Icon && <Icon className="w-5 h-5" />}
-                  <span className="capitalize">{provider}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          <p className="text-center text-sm text-base-content/40 mt-6">
-            Nu ai cont?{" "}
-            <a href="/register" className="link link-primary">
-              Inregistreaza-te
-            </a>
-          </p>
+        <div className="auth-divider">
+          <span>sau</span>
         </div>
+
+        <div className="oauth-list">
+          {["google", "github", "linkedin"].map((provider) => {
+            const Icon = providerIcons?.[provider];
+            return (
+              <button
+                key={provider}
+                type="button"
+                onClick={() => handleOAuth(provider)}
+                disabled={loading}
+                className="oauth-button"
+              >
+                {Icon && <Icon aria-hidden="true" />}
+                <span style={{ textTransform: "capitalize" }}>{provider}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <p className="auth-footer">
+          Nu ai cont? <a href="/register">Inregistreaza-te</a>
+        </p>
       </div>
     </div>
   );
