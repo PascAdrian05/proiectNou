@@ -5,6 +5,7 @@ import { aiService } from "../services/api/aiService";
 import { useToast } from "../context/ToastContext";
 import { useAuth } from "../context/AuthContext";
 import { FindingCard } from "../components/FindingCard";
+import { QuickFixes } from "../components/QuickFixes";
 import { enrichFinding } from "../utils/findingLabels";
 import { createEventSource } from "../services/api/eventStream";
 
@@ -168,6 +169,8 @@ export function FindingsPage() {
 
       <p className="hint">{filteredFindings.length} of {findings.length} findings shown</p>
       {error && <p className="error-text">{error}</p>}
+
+      <QuickFixes findings={findings} />
 
         <div className="findings-list">
           {filteredFindings.map((finding) => {

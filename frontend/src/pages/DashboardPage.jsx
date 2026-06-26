@@ -17,6 +17,7 @@ import { buildAlertFeed, buildSevenDayTrend, buildWebsiteInsights, getTopIssues 
 import { exportReportCsv } from "../utils/reportExport";
 import { exportReportPdf } from "../utils/reportExportPdf";
 import { BehaviorRiskCard } from "../components/BehaviorRiskCard";
+import { SecurityScoreCard } from "../components/SecurityScoreCard";
 import { SeverityBadge } from "../components/SeverityBadge";
 import { StatCard } from "../components/StatCard";
 
@@ -240,7 +241,7 @@ export function DashboardPage() {
       {isLoading && <p className="route-loader">Loading dashboard analytics...</p>}
 
       <div className="kpi-row">
-        <StatCard label="Security Score" value={`${averageScore}/100`} hint={`Trend: ${trend.direction}`} accent={averageScore >= 85 ? "good" : averageScore >= 65 ? "warn" : "bad"} />
+        <SecurityScoreCard score={averageScore} trend={trend} />
         <StatCard label="Websites" value={websiteInsights.length} hint="Monitored domains" />
         <StatCard label="Open Findings" value={openFindings} hint={`${criticalCount} critical`} accent={criticalCount > 0 ? "bad" : undefined} />
         <StatCard label="Live Users" value={onlineUsers} hint="Active sessions now" accent="good" />
@@ -265,11 +266,23 @@ export function DashboardPage() {
         />
         <article>
           <h3>Quick Actions</h3>
-          <div className="module-links">
-            <button type="button" onClick={() => navigate(appConfig.routes.websites)}>Websites</button>
-            <button type="button" onClick={() => navigate(appConfig.routes.scans)}>Scans</button>
-            <button type="button" onClick={() => navigate(appConfig.routes.findings)}>Findings</button>
-            <button type="button" onClick={() => navigate(appConfig.routes.alerts)}>Alerts</button>
+          <div className="quick-actions-grid">
+            <button type="button" className="quick-action-btn" onClick={() => navigate(appConfig.routes.websites)}>
+              <span className="quick-action-icon">➕</span>
+              <span className="quick-action-label">Add Website</span>
+            </button>
+            <button type="button" className="quick-action-btn" onClick={() => navigate(appConfig.routes.scans)}>
+              <span className="quick-action-icon">🔍</span>
+              <span className="quick-action-label">Run Scan</span>
+            </button>
+            <button type="button" className="quick-action-btn" onClick={onExportPdf}>
+              <span className="quick-action-icon">📊</span>
+              <span className="quick-action-label">Generate Report</span>
+            </button>
+            <button type="button" className="quick-action-btn" onClick={onCreateShareLink}>
+              <span className="quick-action-icon">🔗</span>
+              <span className="quick-action-label">Share Dashboard</span>
+            </button>
           </div>
         </article>
         <article>
