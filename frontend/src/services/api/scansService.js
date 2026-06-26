@@ -21,13 +21,17 @@ export const scansService = {
   },
 
   async enqueue(payload) {
-    // TODO: Bind your API data here if backend payload fields change.
-    const data = await apiAuthRequest("/scans/enqueue", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    invalidateCache([SCAN_RUNS_CACHE_KEY, "findings:list", "alerts:list"]);
-    return data;
+    try {
+      const data = await apiAuthRequest("/scans/enqueue", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      invalidateCache([SCAN_RUNS_CACHE_KEY, "findings:list", "alerts:list"]);
+      return data;
+    } catch (error) {
+      console.error("Failed to enqueue scan:", error);
+      throw error;
+    }
   },
 
   async remove(scanRunId) {

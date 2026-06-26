@@ -1,250 +1,298 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { authService } from "../services/api/authService";
-import { websitesService } from "../services/api/websitesService";
+import { useState, useRef } from "react";
+import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { Shield, Eye, EyeOff, Lock, KeyRound } from "lucide-react";
+import { toast } from "react-hot-toast";
 import { useAuth } from "../context/AuthContext";
-import { authFormDefaults } from "../data/mock/authMock";
-import { appConfig } from "../config/appConfig";
-import { PasswordField } from "../components/PasswordField";
+import { authService } from "../services/api/authService";
+import { providerIcons } from "./OAuthIcons";
 
-export function LoginPage() {
+const CODE_LENGTH = 6;
+
+function LoginPage() {
+  const { isAuthenticated, saveSession } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [loginError, setLoginError] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { saveSession } = useAuth();
-  const [form, setForm] = useState(authFormDefaults.login);
-  const [error, setError] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // 2FA state
-  const [requires2FA, setRequires2FA] = useState(false);
-  const [twoFactorToken, setTwoFactorToken] = useState("");
+  const [pendingToken, setPendingToken] = useState(null);
+  const [code, setCode] = useState(Array(CODE_LENGTH).fill(""));
+  const [focusedIdx, setFocusedIdx] = useState(0);
+  const inputRefs = useRef([]);
 
-  // Recovery state
-  const [showRecovery, setShowRecovery] = useState(false);
-  const [recoveryCode, setRecoveryCode] = useState("");
+  if (isAuthenticated) {
+    return <Navigate to={searchParams.get("redirect") || "/"} replace />;
+  }
 
-  async function onSubmit(event) {
-    event.preventDefault();
-    setError("");
-    setIsSubmitting(true);
+  async function handleLogin(e) {
+    e.preventDefault();
+    setLoginError("");
 
+    if (!email || !password) {
+      setLoginError("Completeaza email si parola.");
+      return;
+    }
+
+    setLoading(true);
     try {
-      const response = await authService.login(form.email, form.password);
+      const response = await authService.login(email, password);
 
-      // Check if 2FA is required
       if (response.requires_2fa) {
-        setRequires2FA(true);
-        setError("");
-        setIsSubmitting(false);
-        return;
+        setPendingToken(response.access_token);
+        setFocusedIdx(0);
+        setTimeout(() => inputRefs.current[0]?.focus(), 100);
+      } else {
+        saveSession({
+          accessToken: response.access_token,
+          refreshToken: response.refresh_token,
+          role: response.role,
+          tenantId: response.tenant_id,
+          email: email,
+        });
+        toast.success(`Bine ai venit!`);
+        navigate(searchParams.get("redirect") || "/");
       }
-
-      // No 2FA required, normal login
-      saveSession({
-        accessToken: response.access_token,
-        refreshToken: response.refresh_token || "",
-        role: response.role || "",
-        tenantId: response.tenant_id || "",
-      });
-
-      try {
-        const websites = await websitesService.list();
-        navigate(websites.length ? appConfig.routes.dashboard : appConfig.routes.onboarding);
-      } catch {
-        navigate(appConfig.routes.onboarding);
+    } catch (err) {
+      const msg = err.message || "Eroare de autentificare";
+      if (msg.includes("locked") || msg.includes("temporar")) {
+        setLoginError("Cont blocat temporar. Verifica emailul sau contacteaza suportul.");
+      } else if (msg.includes("Invalid") || msg.includes("incorect")) {
+        setLoginError("Email sau parola incorecte.");
+      } else {
+        setLoginError(msg);
       }
-    } catch (submitError) {
-      setError(submitError.message || "Login failed");
     } finally {
-      setIsSubmitting(false);
+      setLoading(false);
     }
   }
 
-  async function onVerify2FA(event) {
-    event.preventDefault();
-    setError("");
-    setIsSubmitting(true);
+  function handleCodeChange(index, value) {
+    const digit = value.replace(/\D/g, "").slice(-1);
+    const newCode = [...code];
+    newCode[index] = digit;
+    setCode(newCode);
 
+    if (digit && index < CODE_LENGTH - 1) {
+      setFocusedIdx(index + 1);
+      inputRefs.current[index + 1]?.focus();
+    }
+
+    const fullCode = newCode.join("");
+    if (fullCode.length === CODE_LENGTH) {
+      submit2FA(fullCode);
+    }
+  }
+
+  function handleCodeKeyDown(index, e) {
+    if (e.key === "Backspace" && !code[index] && index > 0) {
+      setFocusedIdx(index - 1);
+      inputRefs.current[index - 1]?.focus();
+    } else if (e.key === "ArrowLeft" && index > 0) {
+      setFocusedIdx(index - 1);
+      inputRefs.current[index - 1]?.focus();
+    } else if (e.key === "ArrowRight" && index < CODE_LENGTH - 1) {
+      setFocusedIdx(index + 1);
+      inputRefs.current[index + 1]?.focus();
+    }
+  }
+
+  function handleCodePaste(e) {
+    e.preventDefault();
+    const pasted = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, CODE_LENGTH);
+    const newCode = [...code];
+    for (let i = 0; i < pasted.length; i++) {
+      newCode[i] = pasted[i];
+    }
+    setCode(newCode);
+    const nextIdx = Math.min(pasted.length, CODE_LENGTH - 1);
+    setFocusedIdx(nextIdx);
+    inputRefs.current[nextIdx]?.focus();
+
+    if (pasted.length === CODE_LENGTH) {
+      submit2FA(pasted);
+    }
+  }
+
+  async function submit2FA(fullCode) {
+    if (fullCode.length !== CODE_LENGTH) return;
+    setLoading(true);
     try {
-      const response = await authService.verify2fa(form.email, form.password, twoFactorToken);
-
+      const response = await authService.verify2fa(email, password, fullCode);
       saveSession({
         accessToken: response.access_token,
-        refreshToken: response.refresh_token || "",
-        role: response.role || "",
-        tenantId: response.tenant_id || "",
+        refreshToken: response.refresh_token,
+        role: response.role,
+        tenantId: response.tenant_id,
+        email: email,
       });
-
-      try {
-        const websites = await websitesService.list();
-        navigate(websites.length ? appConfig.routes.dashboard : appConfig.routes.onboarding);
-      } catch {
-        navigate(appConfig.routes.onboarding);
-      }
-    } catch (verifyError) {
-      setError(verifyError.message || "2FA verification failed");
+      toast.success("Autentificare reusita!");
+      navigate(searchParams.get("redirect") || "/");
+    } catch (err) {
+      const msg = err.message || "Cod invalid";
+      toast.error(msg);
+      setCode(Array(CODE_LENGTH).fill(""));
+      setFocusedIdx(0);
+      inputRefs.current[0]?.focus();
     } finally {
-      setIsSubmitting(false);
+      setLoading(false);
     }
   }
 
-  async function onRecoverWithBackup(event) {
-    event.preventDefault();
-    setError("");
-    setIsSubmitting(true);
-
-    try {
-      const normalizedCode = recoveryCode
-        .toUpperCase()
-        .replace(/\s/g, "")
-        .replace(/-/g, "");
-
-      const formattedCode = `${normalizedCode.slice(0, 4)}-${normalizedCode.slice(4)}`;
-      const response = await authService.recoverWithBackupCode(form.email, form.password, formattedCode);
-
-      saveSession({
-        accessToken: response.access_token,
-        refreshToken: response.refresh_token || "",
-        role: response.role || "",
-        tenantId: response.tenant_id || "",
-      });
-
-      try {
-        const websites = await websitesService.list();
-        navigate(websites.length ? appConfig.routes.dashboard : appConfig.routes.onboarding);
-      } catch {
-        navigate(appConfig.routes.onboarding);
-      }
-    } catch (recoverError) {
-      setError(recoverError.message || "Backup code recovery failed");
-    } finally {
-      setIsSubmitting(false);
-    }
+  function handleOAuth(provider) {
+    setLoginError("");
+    const clientId = {
+      google: "google-client-id-placeholder",
+      github: "github-client-id-placeholder",
+      linkedin: "linkedin-client-id-placeholder",
+    }[provider];
+    window.location.href = `/api/v1/auth/oauth/${provider}?client_id=${clientId}`;
   }
 
-  function onCancel2FA() {
-    setRequires2FA(false);
-    setTwoFactorToken("");
-    setShowRecovery(false);
-    setRecoveryCode("");
-    setError("");
-  }
-
-  function switchToRecovery() {
-    setShowRecovery(true);
-    setError("");
-  }
-
-  function switchTo2FA() {
-    setShowRecovery(false);
-    setError("");
+  if (pendingToken) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-base-300 via-base-200 to-base-300">
+        <div className="card w-full max-w-md bg-base-100 shadow-2xl">
+          <div className="card-body items-center text-center p-8">
+            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-4">
+              <KeyRound className="w-8 h-8 text-primary" />
+            </div>
+            <h2 className="text-2xl font-bold">Verificare in 2 pasi</h2>
+            <p className="text-base-content/60 mt-1">
+              Introdu codul din aplicatia de autentificare
+            </p>
+            <div className="flex gap-3 mt-6" onPaste={handleCodePaste}>
+              {code.map((digit, index) => (
+                <input
+                  key={index}
+                  ref={(el) => (inputRefs.current[index] = el)}
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={1}
+                  value={digit}
+                  onChange={(e) => handleCodeChange(index, e.target.value)}
+                  onKeyDown={(e) => handleCodeKeyDown(index, e)}
+                  onFocus={() => setFocusedIdx(index)}
+                  className={`w-12 h-14 text-center text-2xl font-bold rounded-lg border-2 bg-base-200 transition-all duration-150 outline-none
+                    ${focusedIdx === index ? "border-primary ring-2 ring-primary/30 scale-105" : "border-base-300"}
+                    ${code[index] ? "border-primary" : ""}`}
+                />
+              ))}
+            </div>
+            <p className="text-xs text-base-content/40 mt-4">Codul se trimite automat</p>
+            <button
+              onClick={() => { setPendingToken(null); setCode(Array(CODE_LENGTH).fill("")); setLoginError(""); }}
+              className="btn btn-ghost btn-sm mt-4"
+            >
+              Inapoi la login
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <section className="page-card">
-      <h2>Login</h2>
-      <p className="hint">
-        {requires2FA && !showRecovery
-          ? "Enter your 2FA code to complete login."
-          : requires2FA && showRecovery
-            ? "Enter one of your backup codes to recover access."
-            : "Authenticate with your tenant account credentials."}
-      </p>
-
-      {!requires2FA ? (
-        <form onSubmit={onSubmit} className="form-grid">
-          <label>
-            Email
-            <input
-              type="email"
-              placeholder="owner@example.com"
-              value={form.email}
-              onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))}
-              required
-            />
-          </label>
-
-          <PasswordField
-            label="Password"
-            placeholder="Enter your password"
-            value={form.password}
-            onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))}
-            required
-          />
-
-          <button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Signing in..." : "Login"}
-          </button>
-        </form>
-      ) : showRecovery ? (
-        <form onSubmit={onRecoverWithBackup} className="form-grid">
-          <label>
-            Backup Code
-            <input
-              type="text"
-              placeholder="ABCD-1234"
-              value={recoveryCode}
-              onChange={(event) => setRecoveryCode(event.target.value.toUpperCase().slice(0, 9))}
-              required
-              autoFocus
-            />
-            <span className="field-hint">
-              Enter one of your 10 backup codes. Each code can only be used once.
-            </span>
-          </label>
-
-          <button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Recovering..." : "Recover Access"}
-          </button>
-
-          <div className="settings-actions">
-            <button type="button" className="ghost-button" onClick={switchTo2FA}>
-              Use authenticator app instead
-            </button>
-            <button type="button" className="ghost-button" onClick={onCancel2FA}>
-              Cancel
-            </button>
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-base-300 via-base-200 to-base-300 p-4">
+      <div className="card w-full max-w-md bg-base-100 shadow-2xl">
+        <div className="card-body p-8">
+          <div className="text-center mb-6">
+            <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-4">
+              <Shield className="w-8 h-8 text-primary" />
+            </div>
+            <h1 className="text-3xl font-bold">Guardian</h1>
+            <p className="text-base-content/60 mt-1">Platforma de securitate cibernetica</p>
           </div>
-        </form>
-      ) : (
-        <form onSubmit={onVerify2FA} className="form-grid">
-          <label>
-            2FA Code
-            <input
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]{6}"
-              placeholder="000000"
-              value={twoFactorToken}
-              onChange={(event) => setTwoFactorToken(event.target.value.replace(/\D/g, "").slice(0, 6))}
-              required
-              maxLength={6}
-              autoFocus
-            />
-            <span className="field-hint">Enter the 6-digit code from your authenticator app.</span>
-          </label>
 
-          <button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Verifying..." : "Verify"}
-          </button>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <label className="form-control">
+              <div className="label">
+                <span className="label-text">Email</span>
+              </div>
+              <input
+                type="email"
+                placeholder="nume@exemplu.ro"
+                className="input input-bordered w-full"
+                value={email}
+                onChange={(e) => { setEmail(e.target.value); setLoginError(""); }}
+                autoComplete="email"
+                required
+                disabled={loading}
+              />
+            </label>
 
-          <div className="settings-actions">
-            <button type="button" className="ghost-button" onClick={switchToRecovery}>
-              Use a backup code instead
+            <label className="form-control">
+              <div className="label">
+                <span className="label-text">Parola</span>
+              </div>
+              <div className="join w-full">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  placeholder="Parola ta"
+                  className="input input-bordered join-item w-full"
+                  value={password}
+                  onChange={(e) => { setPassword(e.target.value); setLoginError(""); }}
+                  autoComplete="current-password"
+                  required
+                  disabled={loading}
+                />
+                <button
+                  type="button"
+                  className="btn btn-square join-item btn-outline"
+                  onClick={() => setShowPassword(!showPassword)}
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                </button>
+              </div>
+            </label>
+
+            {loginError && (
+              <div className="alert alert-error text-sm p-3">
+                <Lock className="w-4 h-4 shrink-0" />
+                <span>{loginError}</span>
+              </div>
+            )}
+
+            <button type="submit" className="btn btn-primary w-full" disabled={loading}>
+              {loading ? <span className="loading loading-spinner" /> : null}
+              {loading ? "Se proceseaza..." : "Intra in cont"}
             </button>
-            <button type="button" className="ghost-button" onClick={onCancel2FA}>
-              Cancel
-            </button>
+          </form>
+
+          <div className="divider my-6 text-xs text-base-content/40">sau</div>
+
+          <div className="space-y-2">
+            {["google", "github", "linkedin"].map((provider) => {
+              const Icon = providerIcons?.[provider];
+              return (
+                <button
+                  key={provider}
+                  onClick={() => handleOAuth(provider)}
+                  disabled={loading}
+                  className="btn btn-outline w-full gap-3"
+                >
+                  {Icon && <Icon className="w-5 h-5" />}
+                  <span className="capitalize">{provider}</span>
+                </button>
+              );
+            })}
           </div>
-        </form>
-      )}
 
-      {error && <p className="error-text">{error}</p>}
-
-      {!requires2FA && (
-        <p className="hint">
-          New here? <Link to={appConfig.routes.register}>Create an account</Link>
-        </p>
-      )}
-    </section>
+          <p className="text-center text-sm text-base-content/40 mt-6">
+            Nu ai cont?{" "}
+            <a href="/register" className="link link-primary">
+              Inregistreaza-te
+            </a>
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
+
+export { LoginPage };
+export default LoginPage;

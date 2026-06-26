@@ -1,3 +1,4 @@
+from uuid import uuid4
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
@@ -6,7 +7,7 @@ from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.core.database import engine
-from app.core.security import create_access_token
+from app.core.security import create_access_token, get_password_hash
 from app.models.oauth_account import OAuthAccount
 from app.models.subscription import Subscription
 from app.models.tenant import Tenant
@@ -70,11 +71,12 @@ async def oauth_callback(provider: str, request: Request):
 			tenant = Tenant(name=f"{email.split('@')[0]} tenant")
 			session.add(tenant)
 			session.flush()
+			random_password = get_password_hash(str(uuid4()))
 			user = User(
 				tenant_id=tenant.id,
 				email=email,
 				role="owner",
-				hashed_password="oauth-account",
+				hashed_password=random_password,
 				is_active=True,
 			)
 			session.add(user)
@@ -95,5 +97,7 @@ async def oauth_callback(provider: str, request: Request):
 		session.refresh(user)
 
 	jwt_token = create_access_token(subject=str(user.id), tenant_id=str(user.tenant_id), role=user.role)
-	redirect_target = f"{settings.frontend_url}/?token={quote(jwt_token)}"
+	request.session["oauth_token"] = jwt_token
+	request.session["oauth_tenant_id"] = str(user.tenant_id)
+	redirect_target = f"{settings.frontend_url}/?oauth=success"
 	return RedirectResponse(url=redirect_target, status_code=302)

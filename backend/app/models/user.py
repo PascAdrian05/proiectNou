@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 from uuid import UUID, uuid4
 
@@ -14,7 +14,7 @@ class User(SQLModel, table=True):
     role: str = Field(default="owner", index=True)
     is_active: bool = True
     is_superuser: bool = False
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     # 2FA fields
     totp_secret: str | None = Field(default=None, nullable=True)
     totp_enabled: bool = Field(default=False)

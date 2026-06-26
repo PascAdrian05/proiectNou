@@ -61,8 +61,8 @@ async def get_security_tips(
     # Check if user's plan has access to AI insights
     check_plan_feature(session, str(current_user.tenant_id), "ai_insights")
     
-    websites = session.exec(select(Website)).all()
-    findings = session.exec(select(Finding)).all()
+    websites = session.exec(select(Website).where(Website.tenant_id == current_user.tenant_id)).all()
+    findings = session.exec(select(Finding).where(Finding.tenant_id == current_user.tenant_id)).all()
 
     website_data = [{"id": w.id, "domain": w.domain} for w in websites]
     finding_data = [
@@ -86,8 +86,8 @@ async def verify_posture(
     # Check if user's plan has access to AI insights
     check_plan_feature(session, str(current_user.tenant_id), "ai_insights")
     
-    websites = session.exec(select(Website)).all()
-    findings = session.exec(select(Finding)).all()
+    websites = session.exec(select(Website).where(Website.tenant_id == current_user.tenant_id)).all()
+    findings = session.exec(select(Finding).where(Finding.tenant_id == current_user.tenant_id)).all()
 
     website_data = [{"id": w.id, "domain": w.domain} for w in websites]
     finding_data = [
@@ -112,8 +112,8 @@ async def get_proactive_insights(
     # Check if user's plan has access to AI insights
     check_plan_feature(session, str(current_user.tenant_id), "ai_insights")
     
-    websites = session.exec(select(Website)).all()
-    findings = session.exec(select(Finding).where(Finding.status == "open")).all()
+    websites = session.exec(select(Website).where(Website.tenant_id == current_user.tenant_id)).all()
+    findings = session.exec(select(Finding).where(Finding.tenant_id == current_user.tenant_id, Finding.status == "open")).all()
 
     website_data = [{"id": w.id, "domain": w.domain} for w in websites]
     finding_data = [
@@ -122,10 +122,40 @@ async def get_proactive_insights(
             "severity": f.severity,
             "kind": f.kind,
             "title": f.title,
-            "created_at": f.created_at.isoformat() if f.created_at else None,
+            "first_seen_at": f.first_seen_at.isoformat() if f.first_seen_at else None,
         }
         for f in findings
     ]
 
     # Generate insights focused on actionable recommendations
     return await ai_service.get_proactive_insights(website_data, finding_data)
+
+
+@router.post("/auto-fix/{finding_id}")
+async def auto_fix_finding(
+    finding_id: UUID,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    check_plan_feature(session, str(current_user.tenant_id), "ai_insights")
+
+    finding = session.get(Finding, finding_id)
+    if not finding:
+        return {"available": False, "message": "Finding not found"}
+
+    finding_data = {
+        "id": str(finding.id),
+        "title": finding.title,
+        "severity": finding.severity,
+        "kind": finding.kind,
+        "details_json": finding.details_json,
+        "status": finding.status,
+    }
+
+    context = {}
+    if finding.website_id:
+        website = session.get(Website, finding.website_id)
+        if website:
+            context["website"] = website.domain
+
+    return await ai_service.auto_fix_finding(finding_data, context)

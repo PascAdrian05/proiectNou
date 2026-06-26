@@ -16,11 +16,11 @@ class PlanLimits:
         PRO: float('inf')  # Unlimited
     }
     
-    # Scan frequency limits (in hours)
+    # Scan frequency limits (in hours) — PRO = 0 means unlimited
     SCAN_FREQUENCY_LIMITS = {
         FREE: 168,  # Weekly (7 days * 24 hours)
         BASIC: 24,  # Daily
-        PRO: 1,    # Hourly
+        PRO: 0,     # No limit — scan whenever you want
     }
     
     # Daily scan count limits
@@ -91,6 +91,8 @@ class PlanLimits:
     def can_scan(cls, plan: str, last_scan_hours_ago: int) -> tuple[bool, str]:
         """Check if a plan can perform a scan based on frequency limits."""
         min_interval = cls.get_scan_frequency_limit(plan)
+        if min_interval == 0:
+            return True, ""
         if last_scan_hours_ago < min_interval:
             return False, f"Your {plan} plan allows scans every {min_interval} hours"
         return True, ""
@@ -103,7 +105,7 @@ class PlanLimits:
     @classmethod
     def can_scan_by_count(cls, plan: str, scans_used: int, scans_limit: int) -> tuple[bool, str]:
         """Check if a plan can perform a scan based on daily count limits."""
-        limit = cls.get_daily_scan_limit(plan)
+        limit = scans_limit if scans_limit > 0 else cls.get_daily_scan_limit(plan)
         if limit == float('inf'):
             return True, ""
         if scans_used >= limit:

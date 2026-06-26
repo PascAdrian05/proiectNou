@@ -95,16 +95,27 @@ export function WebsitesPage() {
             required
           />
         </label>
-        <label>
-          Scan Frequency (minutes)
+        <label className="auto-scan-toggle">
           <input
-            type="number"
-            min={1}
-            value={form.scan_frequency_minutes}
-            onChange={(event) => setForm((prev) => ({ ...prev, scan_frequency_minutes: event.target.value }))}
-            required
+            type="checkbox"
+            checked={form.scan_frequency_minutes > 0}
+            onChange={(e) => setForm((prev) => ({ ...prev, scan_frequency_minutes: e.target.checked ? 1440 : 0 }))}
           />
+          <span>Enable auto-scan</span>
         </label>
+        {form.scan_frequency_minutes > 0 && (
+          <label>
+            Scan frequency
+            <input
+              type="number"
+              min={1}
+              value={form.scan_frequency_minutes}
+              onChange={(event) => setForm((prev) => ({ ...prev, scan_frequency_minutes: event.target.value }))}
+              required
+            />
+            <span className="field-hint">Minutes between automatic scans.</span>
+          </label>
+        )}
         <button type="submit" disabled={isBusy || !isAuthenticated}>{isBusy ? "Creating..." : "Add Website"}</button>
       </form>
 

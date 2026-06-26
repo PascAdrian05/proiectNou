@@ -1,3 +1,4 @@
+import json
 import os
 from groq import Groq
 from app.core.config import settings
@@ -39,7 +40,6 @@ class AIService:
                 response_format={"type": "json_object"},
             )
 
-            import json
             content = response.choices[0].message.content
             result = json.loads(content)
             result["available"] = True
@@ -86,7 +86,6 @@ class AIService:
                 response_format={"type": "json_object"},
             )
 
-            import json
             content = response.choices[0].message.content
             result = json.loads(content)
             result["available"] = True
@@ -139,7 +138,6 @@ class AIService:
                 response_format={"type": "json_object"},
             )
 
-            import json
             content = response.choices[0].message.content
             result = json.loads(content)
             result["available"] = True
@@ -204,7 +202,6 @@ class AIService:
                 response_format={"type": "json_object"},
             )
 
-            import json
             content = response.choices[0].message.content
             result = json.loads(content)
             result["available"] = True
@@ -216,6 +213,96 @@ class AIService:
                 "available": False,
                 "message": f"Could not generate proactive insights: {str(exc)}",
             }
+
+    async def auto_fix_finding(self, finding: dict, context: dict | None = None) -> dict:
+        if not self.is_available():
+            return {
+                "available": False,
+                "message": "AI auto-fix is not configured. Please add GROQ_API_KEY.",
+            }
+
+        kind = finding.get("kind", "unknown")
+        details = finding.get("details_json", "{}")
+        website = (context or {}).get("website", "your-site.com")
+
+        try:
+            details_parsed = json.loads(details) if isinstance(details, str) else details
+        except (json.JSONDecodeError, TypeError):
+            details_parsed = {}
+
+        prompt = self._build_autofix_prompt(kind, details_parsed, website)
+
+        try:
+            response = self.client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a senior DevOps / security engineer. "
+                            "Generate a concrete, copy-paste-ready fix for the given security issue. "
+                            "Always include exact configuration or commands. "
+                            "Format response as JSON with keys: "
+                            "summary (short description), "
+                            "fix_type (nginx_config/apache_config/firewall_rule/dns_change/code_change/other), "
+                            "steps (array of step objects with title and command_or_code), "
+                            "risk_level (low/medium/high), "
+                            "estimated_effort (minutes), "
+                            "rollback_instructions (string)."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                max_tokens=1536,
+                response_format={"type": "json_object"},
+            )
+
+            content = response.choices[0].message.content
+            result = json.loads(content)
+            result["available"] = True
+            result["finding_id"] = str(finding.get("id", ""))
+            return result
+
+        except Exception as exc:
+            return {
+                "available": False,
+                "message": f"Auto-fix generation failed: {str(exc)}",
+            }
+
+    def _build_autofix_prompt(self, kind: str, details: dict, website: str) -> str:
+        prompts = {
+            "uptime": (
+                f"Website {website} is unreachable. Details: {json.dumps(details)}. "
+                "Generate a fix. If server is down, provide restart/healthcheck commands. "
+                "If DNS issue, provide DNS check + fix commands. "
+                "Include curl test command to verify the fix."
+            ),
+            "ssl_expiry": (
+                f"SSL certificate for {website} has issues. Details: {json.dumps(details)}. "
+                "Generate fix commands. Include: certbot renew / nginx reload commands, "
+                "or manual certificate renewal steps. "
+                "Include verification with openssl."
+            ),
+            "security_headers": (
+                f"Security headers missing on {website}. Details: {json.dumps(details)}. "
+                "Generate exact Nginx or Apache config snippet to add: "
+                "Strict-Transport-Security, X-Frame-Options, X-Content-Type-Options, "
+                "Content-Security-Policy, Referrer-Policy. "
+                "Include curl test to verify headers after fix."
+            ),
+            "open_ports": (
+                f"Unnecessary open ports detected on {website}. Details: {json.dumps(details)}. "
+                "Generate iptables/ufw firewall rules to close those ports. "
+                "Include verification with nmap or netstat."
+            ),
+        }
+
+        return prompts.get(
+            kind,
+            f"Security finding type '{kind}' on {website}. Details: {json.dumps(details)}. "
+            "Generate the most appropriate fix with exact commands or config."
+        )
 
     def _build_finding_prompt(self, finding: dict, context: dict | None = None) -> str:
         parts = [

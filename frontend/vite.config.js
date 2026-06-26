@@ -4,12 +4,14 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   build: {
-    chunkSizeWarningLimit: 800,
+    chunkSizeWarningLimit: 500,
     rollupOptions: {
       output: {
         manualChunks: {
           react: ["react", "react-dom"],
           router: ["react-router-dom"],
+          charts: ["recharts"],
+          vendor: ["framer-motion", "jspdf", "jspdf-autotable", "html2canvas"],
         },
       },
     },
@@ -20,6 +22,7 @@ export default defineConfig({
       "/api": {
         target: "http://localhost:8000",
         changeOrigin: true,
+        ws: true,
       },
     },
   },

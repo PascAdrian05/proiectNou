@@ -1,254 +1,220 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useState, useRef, useEffect } from "react";
+import { toast } from "react-hot-toast";
+import {
+  Bot, Send, X, Loader2, Shield, Lightbulb, AlertTriangle,
+  Sparkles, ChevronUp, MessageSquare
+} from "lucide-react";
 import { aiService } from "../services/api/aiService";
-import { useAuth } from "../context/AuthContext";
 
-function AITypingDots() {
-  return (
-    <span className="ai-typing" aria-hidden="true">
-      <span className="ai-dot" />
-      <span className="ai-dot" />
-      <span className="ai-dot" />
-    </span>
-  );
-}
-
-export function AIAssistant() {
-  const { isAuthenticated } = useAuth();
+export default function AIAssistant() {
   const [isOpen, setIsOpen] = useState(false);
-  const [status, setStatus] = useState({ available: false, model: null });
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [tips, setTips] = useState(null);
-  const [posture, setPosture] = useState(null);
-  const [error, setError] = useState("");
-  const [conversations, setConversations] = useState([]);
-  const [activeConversationId, setActiveConversationId] = useState(null);
-  const panelRef = useRef(null);
-  const panelId = useId();
+  const [aiAvailable, setAiAvailable] = useState(null);
+  const [showInsights, setShowInsights] = useState(false);
+  const [insights, setInsights] = useState(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const messagesEndRef = useRef(null);
 
   useEffect(() => {
-    aiService.getStatus().then(setStatus).catch(() => setStatus({ available: false, model: null }));
+    let cancelled = false;
+    aiService.getStatus()
+      .then((res) => { if (!cancelled) setAiAvailable(res.available === true); })
+      .catch(() => { if (!cancelled) setAiAvailable(false); });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    if (!isOpen || !isAuthenticated) return;
-    aiService.listConversations()
-      .then(setConversations)
-      .catch(() => setConversations([]));
-  }, [isOpen, isAuthenticated]);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleClickOutside = (event) => {
-      if (panelRef.current && !panelRef.current.contains(event.target)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isOpen]);
-
-  async function onGetTips() {
+  async function handleSend() {
+    const text = input.trim();
+    if (!text || loading) return;
+    setInput("");
+    setMessages((prev) => [...prev, { role: "user", content: text }]);
     setLoading(true);
-    setError("");
-    setTips(null);
-    setPosture(null);
+
     try {
-      const data = await aiService.getSecurityTips();
-      if (!data.available) {
-        setError(data.message || "AI tips unavailable");
-        return;
-      }
-      setTips(data);
-      await saveConversation("security_tips", data);
+      const res = await aiService.getSecurityTips();
+      const reply = res?.response || res?.message || "Am analizat configuratia. Verifica recomandarile din sectiunea de mai sus.";
+      setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
     } catch (err) {
-      setError(err.message || "Could not load tips");
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Eroare: ${err.message || "Eroare de comunicare"}`, error: true },
+      ]);
     } finally {
       setLoading(false);
     }
   }
 
-  async function onVerifyPosture() {
-    setLoading(true);
-    setError("");
-    setTips(null);
-    setPosture(null);
+  function handleKeyDown(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }
+
+  async function loadInsights() {
+    setInsightsLoading(true);
+    setShowInsights(true);
     try {
-      const data = await aiService.verifyPosture();
-      if (!data.available) {
-        setError(data.message || "AI verification unavailable");
-        return;
-      }
-      setPosture(data);
-      await saveConversation("posture_verification", data);
+      const res = await aiService.getSecurityTips();
+      setInsights(res);
     } catch (err) {
-      setError(err.message || "Could not verify posture");
+      toast.error(err.message || "Nu s-au putut incarca recomandarile.");
     } finally {
-      setLoading(false);
+      setInsightsLoading(false);
     }
   }
 
-  async function saveConversation(conversationType, data) {
-    try {
-      const payload = {
-        conversation_type: conversationType,
-        messages: JSON.stringify([{ role: "assistant", content: data }]),
-        context_data: JSON.stringify({}),
-      };
-      const conversation = await aiService.createConversation(payload);
-      setConversations((current) => [conversation, ...current]);
-      setActiveConversationId(conversation.id);
-    } catch (err) {
-      console.error("Failed to save conversation", err);
-    }
-  }
-
-  function renderTips() {
-    if (!tips) return null;
+  if (!isOpen) {
     return (
-      <div className="ai-panel-section">
-        <h4>Security Tips</h4>
-        <p className="ai-hint">Overall health score: {tips.overall_health_score ?? "—"}/100</p>
-        <div className="ai-list">
-          {(tips.tips || []).map((tip, index) => (
-            <div key={index} className="ai-tip-card">
-              <div className="ai-tip-header">
-                <span className={`ai-priority priority-${tip.priority}`}>{tip.priority}</span>
-                <strong>{tip.title}</strong>
-              </div>
-              <p>{tip.description}</p>
-              <span className="ai-hint">Effort: {tip.effort}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  function renderPosture() {
-    if (!posture) return null;
-    const statusClass = posture.status === "healthy" ? "good" : posture.status === "critical" ? "bad" : "warn";
-    return (
-      <div className="ai-panel-section">
-        <h4>Security Posture Verification</h4>
-        <div className="ai-posture-score">
-          <span className={`ai-status-badge status-${statusClass}`}>{posture.status}</span>
-          <strong>Score: {posture.posture_score ?? "—"}/100</strong>
-        </div>
-        <p>{posture.verification_summary}</p>
-        {posture.immediate_actions?.length > 0 && (
-          <div className="ai-list">
-            <h5>Immediate actions</h5>
-            {posture.immediate_actions.map((item, index) => (
-              <div key={index} className="ai-action-item">
-                {item}
-              </div>
-            ))}
-          </div>
-        )}
-        {posture.long_term_recommendations?.length > 0 && (
-          <div className="ai-list">
-            <h5>Long-term recommendations</h5>
-            {posture.long_term_recommendations.map((item, index) => (
-              <div key={index} className="ai-action-item">
-                {item}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      <button
+        onClick={() => setIsOpen(true)}
+        className="fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full bg-primary text-primary-content shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center"
+        title="Asistent AI"
+      >
+        <Bot className="w-6 h-6" />
+      </button>
     );
   }
 
   return (
-    <div className="ai-assistant">
-      <button
-        type="button"
-        className={`ai-fab ${isOpen ? "ai-fab-open" : ""}`}
-        onClick={() => setIsOpen((prev) => !prev)}
-        aria-expanded={isOpen}
-        aria-controls={panelId}
-        title={isAuthenticated && status.available ? "AI Assistant" : "AI Assistant (unavailable)"}
-        disabled={!isAuthenticated}
-      >
-        <span className="ai-fab-icon" aria-hidden="true">
-          {isOpen ? "✕" : "✦"}
-        </span>
-        <span className="ai-fab-label">AI Assistant</span>
-        {status.available && <span className="ai-fab-dot" aria-hidden="true" />}
-      </button>
+    <div className="fixed bottom-6 right-6 z-40 w-80 sm:w-96 shadow-2xl rounded-2xl bg-base-100 border border-base-300 overflow-hidden flex flex-col max-h-[600px]">
+      <div className="bg-primary text-primary-content p-4 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Bot className="w-5 h-5" />
+          <span className="font-semibold">Asistent AI</span>
+          {aiAvailable === true && <span className="badge badge-sm badge-ghost text-primary-content/80">Activ</span>}
+          {aiAvailable === false && <span className="badge badge-sm badge-warning text-xs">Indisponibil</span>}
+        </div>
+        <div className="flex items-center gap-1">
+          <button onClick={loadInsights} className="btn btn-ghost btn-xs btn-square text-primary-content hover:bg-primary/80" title="Recomandari">
+            <Lightbulb className="w-4 h-4" />
+          </button>
+          <button onClick={() => setIsOpen(false)} className="btn btn-ghost btn-xs btn-square text-primary-content hover:bg-primary/80">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
 
-      {isOpen && isAuthenticated && (
-        <div ref={panelRef} id={panelId} className="ai-panel" role="dialog" aria-label="AI Assistant">
-          <div className="ai-panel-header">
-            <div>
-              <h3>Security AI Assistant</h3>
-              <p className="ai-hint">
-                {status.available ? `Powered by ${status.model}` : "AI insights unavailable — add GROQ_API_KEY"}
-              </p>
+      {aiAvailable === false && (
+        <div className="bg-warning/10 text-warning px-4 py-2 text-xs flex items-center gap-2 border-b border-warning/20">
+          <AlertTriangle className="w-3 h-3 shrink-0" />
+          <span>AI indisponibil. Verifica cheia API Groq in configuratie.</span>
+        </div>
+      )}
+
+      {showInsights && (
+        <div className="border-b border-base-300 bg-base-200/50">
+          <div className="px-4 py-3">
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-sm font-semibold flex items-center gap-1">
+                <Sparkles className="w-4 h-4 text-warning" />
+                Recomandari
+              </h4>
+              <button onClick={() => setShowInsights(false)} className="btn btn-ghost btn-xs btn-square">
+                <ChevronUp className="w-4 h-4" />
+              </button>
             </div>
-            <span className={`ai-status-pill ${status.available ? "status-good" : "status-warn"}`}>
-              {status.available ? "Online" : "Offline"}
-            </span>
-          </div>
 
-          {conversations.length > 0 && (
-            <div className="ai-conversation-list">
-              {conversations.map((conversation) => (
+            {insightsLoading ? (
+              <div className="flex items-center gap-2 text-sm text-base-content/60 py-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Se analizeaza...
+              </div>
+            ) : insights?.available === false ? (
+              <p className="text-sm text-base-content/60 py-1">{insights.message || "AI indisponibil."}</p>
+            ) : insights ? (
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {insights.response ? (
+                  <p className="text-sm whitespace-pre-wrap leading-relaxed">{insights.response}</p>
+                ) : insights.summary ? (
+                  <p className="text-sm">{insights.summary}</p>
+                ) : (
+                  <p className="text-sm text-base-content/60">Nu sunt recomandari momentan.</p>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0" style={{ maxHeight: "320px" }}>
+        {messages.length === 0 && !loading && (
+          <div className="text-center py-8">
+            <MessageSquare className="w-8 h-8 text-base-content/20 mx-auto mb-2" />
+            <p className="text-sm text-base-content/40">
+              Intreaba-ma despre securitatea site-urilor tale
+            </p>
+            <div className="flex flex-wrap gap-2 justify-center mt-3">
+              {["Ce vulnerabilitati am?", "Cum imbunatatesc securitatea?", "Recomandari rapide"].map((q) => (
                 <button
-                  key={conversation.id}
-                  type="button"
-                  className={`ai-conversation-item ${conversation.id === activeConversationId ? "active" : ""}`}
-                  onClick={() => setActiveConversationId(conversation.id)}
+                  key={q}
+                  onClick={() => setInput(q)}
+                  className="btn btn-ghost btn-xs bg-base-200 hover:bg-base-300"
                 >
-                  <span>{conversation.conversation_type.replace(/_/g, " ")}</span>
-                  <span className="ai-hint">{new Date(conversation.updated_at).toLocaleString()}</span>
+                  {q}
                 </button>
               ))}
             </div>
-          )}
-
-          <div className="ai-panel-body">
-            {error && <p className="error-text">{error}</p>}
-            {!status.available && (
-              <div className="ai-placeholder">
-                <p><strong>AI Assistant is not configured.</strong></p>
-                <p>To enable AI features, add your Groq API key to the backend <code>.env</code> file:</p>
-                <code>GROQ_API_KEY=your_api_key_here</code>
-                <p className="ai-hint">Get your free API key at <a href="https://console.groq.com" target="_blank" rel="noopener noreferrer">console.groq.com</a></p>
-              </div>
-            )}
-            {loading && status.available && (
-              <div className="ai-loading">
-                <AITypingDots />
-                <span>Analyzing your security data...</span>
-              </div>
-            )}
-            {renderTips()}
-            {renderPosture()}
-            {status.available && !tips && !posture && !loading && (
-              <div className="ai-placeholder">
-                <p>Get personalized security insights and verification for your monitored websites.</p>
-                <ul>
-                  <li>Security tips tailored to your findings</li>
-                  <li>Posture verification with confidence</li>
-                  <li>Actionable recommendations</li>
-                </ul>
-              </div>
-            )}
           </div>
+        )}
 
-          {status.available && (
-            <div className="ai-panel-footer">
-              <button type="button" onClick={onGetTips} disabled={loading}>
-                Get security tips
-              </button>
-              <button type="button" onClick={onVerifyPosture} disabled={loading}>
-                Verify posture
-              </button>
+        {messages.map((msg, i) => (
+          <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div className={`max-w-[85%] rounded-2xl px-4 py-2 text-sm ${
+              msg.role === "user"
+                ? "bg-primary text-primary-content rounded-br-lg"
+                : msg.error
+                  ? "bg-error/10 text-error border border-error/20 rounded-bl-lg"
+                  : "bg-base-200 text-base-content rounded-bl-lg"
+            }`}>
+              <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
             </div>
-          )}
+          </div>
+        ))}
+
+        {loading && (
+          <div className="flex justify-start">
+            <div className="max-w-[85%] rounded-2xl rounded-bl-lg px-4 py-3 bg-base-200">
+              <div className="flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                <span className="text-sm text-base-content/60">Analizez...</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div ref={messagesEndRef} />
+      </div>
+
+      <div className="border-t border-base-300 p-3 bg-base-200/50">
+        <div className="flex gap-2">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Scrie un mesaj..."
+            rows={1}
+            className="textarea textarea-bordered textarea-sm flex-1 resize-none min-h-[36px] max-h-[80px]"
+            disabled={loading}
+          />
+          <button
+            onClick={handleSend}
+            disabled={loading || !input.trim()}
+            className="btn btn-primary btn-sm btn-square"
+          >
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+          </button>
         </div>
-      )}
+        <p className="text-[10px] text-base-content/30 mt-1 text-center">
+          Enter pentru trimitere, Shift+Enter pentru linie noua
+        </p>
+      </div>
     </div>
   );
 }

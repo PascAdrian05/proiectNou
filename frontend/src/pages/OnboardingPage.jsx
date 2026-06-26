@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
 import { FindingCard } from "../components/FindingCard";
 import { StatCard } from "../components/StatCard";
+import { ScanRadarEffect } from "../components/ScanRadarEffect";
 import { useToast } from "../context/ToastContext";
+import { subscribeToScanEvents } from "../services/api/eventStream";
 import { findingsService } from "../services/api/findingsService";
 import { scansService } from "../services/api/scansService";
 import { websitesService } from "../services/api/websitesService";
@@ -62,10 +65,10 @@ export function OnboardingPage() {
     };
   }, [navigate]);
 
+  const wsCleanupRef = useRef(null);
+
   useEffect(() => {
-    if (step !== "scanning") {
-      return undefined;
-    }
+    if (step !== "scanning") return undefined;
 
     let index = 0;
     const intervalId = window.setInterval(() => {
@@ -74,7 +77,24 @@ export function OnboardingPage() {
       setScanLabel(SCAN_STEPS[index]);
     }, 2200);
 
-    return () => window.clearInterval(intervalId);
+    wsCleanupRef.current = subscribeToScanEvents({
+      onProgress: (data) => {
+        if (data.progress) {
+          const pct = Math.round((data.progress.steps_completed / data.progress.total_steps) * 100);
+          setScanProgress(pct);
+          setScanLabel(SCAN_STEPS[data.progress.steps_completed] || SCAN_STEPS[0]);
+        }
+      },
+      onCompleted: (data) => {
+        setScanProgress(100);
+        setScanLabel(data.status === "completed" ? "Scan complete!" : "Scan finished with errors");
+      },
+    });
+
+    return () => {
+      window.clearInterval(intervalId);
+      if (wsCleanupRef.current) wsCleanupRef.current();
+    };
   }, [step]);
 
   async function pollScanCompletion(scanRunId, websiteId) {
@@ -141,30 +161,45 @@ export function OnboardingPage() {
   const score = insights[0]?.score ?? 100;
   const healthLabel = insights[0]?.healthLabel ?? "Healthy";
 
+  const pageVariants = {
+    initial: { opacity: 0, y: 16 },
+    animate: { opacity: 1, y: 0 },
+    exit: { opacity: 0, y: -12 },
+  };
+
   return (
     <section className="page-card onboarding-shell">
       <div className="onboarding-progress">
         {ONBOARDING_STEPS.map((s) => (
-          <span key={s.id} className={step === s.id ? "active" : ""} title={s.description}>
-            {s.label}
-          </span>
+          <motion.span
+            key={s.id}
+            className={step === s.id ? "active" : ONBOARDING_STEPS.findIndex((x) => x.id === step) > ONBOARDING_STEPS.findIndex((x) => x.id === s.id) ? "done" : ""}
+            title={s.description}
+            layout
+            transition={{ type: "spring", stiffness: 300, damping: 25 }}
+          >
+            {ONBOARDING_STEPS.findIndex((x) => x.id === step) > ONBOARDING_STEPS.findIndex((x) => x.id === s.id) ? "\u2713 " : ""}{s.label}
+          </motion.span>
         ))}
       </div>
 
+      <AnimatePresence mode="wait">
+        <motion.div key={step} variants={pageVariants} initial="initial" animate="animate" exit="exit" transition={{ duration: 0.18, ease: "easeOut" }}>
+
       {step === "welcome" && (
         <div className="onboarding-step">
-          <h2>Welcome to Security Monitor! 🛡️</h2>
+          <h2>Welcome to Security Monitor <span role="img" aria-label="shield">🛡️</span></h2>
           <p className="hint">
             We'll help you set up continuous security monitoring for your websites in just a few minutes.
           </p>
           <div className="onboarding-features">
             <h3>What you'll get:</h3>
             <ul>
-              <li>✅ Automated security scans (SSL, headers, ports)</li>
-              <li>✅ Real-time security scoring</li>
-              <li>✅ AI-powered security insights</li>
-              <li>✅ Instant alerts via email or webhooks</li>
-              <li>✅ Beautiful shareable security reports</li>
+              <li><span role="img" aria-label="check">✅</span> Automated security scans (SSL, headers, ports)</li>
+              <li><span role="img" aria-label="check">✅</span> Real-time security scoring</li>
+              <li><span role="img" aria-label="check">✅</span> AI-powered security insights</li>
+              <li><span role="img" aria-label="check">✅</span> Instant alerts via email or webhooks</li>
+              <li><span role="img" aria-label="check">✅</span> Beautiful shareable security reports</li>
             </ul>
           </div>
           <button type="button" onClick={() => setStep("add-site")}>
@@ -205,12 +240,26 @@ export function OnboardingPage() {
 
       {step === "scanning" && (
         <div className="onboarding-step onboarding-scanning">
-          <h2>Scanning {website?.domain || parseDomainInput(domainInput)?.domain || "your site"}...</h2>
+          <ScanRadarEffect active />
+          <h2>Scanning {website?.domain || parseDomainInput(domainInput)?.domain || "your site"}</h2>
           <p className="hint">{scanLabel}</p>
           <div className="progress-track">
-            <div className="progress-fill" style={{ width: `${scanProgress}%` }} />
+            <motion.div
+              className="progress-fill"
+              initial={{ width: "0%" }}
+              animate={{ width: `${scanProgress}%` }}
+              transition={{ duration: 0.4, ease: "easeOut" }}
+            />
           </div>
-          <p className="hint progress-percent">{scanProgress}%</p>
+          <motion.p
+            className="hint progress-percent"
+            key={scanProgress}
+            initial={{ opacity: 0.4, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.15 }}
+          >
+            {scanProgress}%
+          </motion.p>
         </div>
       )}
 
@@ -235,12 +284,14 @@ export function OnboardingPage() {
           </div>
 
           {findings.length > 0 && (
-            <div className="onboarding-findings">
+            <motion.div className="onboarding-findings" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.2 }}>
               <h3>What we found</h3>
-              {findings.map((finding) => (
-                <FindingCard key={finding.id} finding={finding} websiteDomain={website?.domain} />
+              {findings.map((finding, i) => (
+                <motion.div key={finding.id} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.3 + i * 0.1 }}>
+                  <FindingCard finding={finding} websiteDomain={website?.domain} />
+                </motion.div>
               ))}
-            </div>
+            </motion.div>
           )}
 
           <div className="onboarding-cta">
@@ -293,18 +344,18 @@ export function OnboardingPage() {
 
       {step === "complete" && (
         <div className="onboarding-step">
-          <h2>You're all set! 🎉</h2>
+          <h2>You're all set! <span role="img" aria-label="party">🎉</span></h2>
           <p className="hint">
             Your website is now being monitored continuously. We'll scan it regularly and alert you to any issues.
           </p>
           <div className="onboarding-complete-info">
             <h3>What happens next:</h3>
             <ul>
-              <li>🔄 Automatic scans will run periodically</li>
-              <li>📊 Your security score will update automatically</li>
-              <li>🔔 You'll receive alerts if issues are found</li>
-              <li>📈 Track trends in your dashboard</li>
-              <li>🤖 Use AI Assistant for security insights</li>
+              <li><span role="img" aria-label="sync">🔄</span> Automatic scans will run periodically</li>
+              <li><span role="img" aria-label="chart">📊</span> Your security score will update automatically</li>
+              <li><span role="img" aria-label="bell">🔔</span> You'll receive alerts if issues are found</li>
+              <li><span role="img" aria-label="trend">📈</span> Track trends in your dashboard</li>
+              <li><span role="img" aria-label="robot">🤖</span> Use AI Assistant for security insights</li>
             </ul>
           </div>
           <div className="onboarding-cta">
@@ -317,6 +368,9 @@ export function OnboardingPage() {
           </p>
         </div>
       )}
+
+        </motion.div>
+      </AnimatePresence>
     </section>
   );
 }

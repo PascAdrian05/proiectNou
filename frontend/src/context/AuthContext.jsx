@@ -8,18 +8,13 @@ export function AuthProvider({ children }) {
   const [auth, setAuth] = useState(storage.getAuthSession());
 
   useEffect(() => {
-    if (!auth.accessToken) {
-      return undefined;
-    }
+    if (!auth.accessToken) return;
 
     let isMounted = true;
-
     async function sendHeartbeat() {
       try {
         await presenceService.heartbeat();
-      } catch {
-        // presence is best-effort
-      }
+      } catch {}
     }
 
     sendHeartbeat();
@@ -28,9 +23,6 @@ export function AuthProvider({ children }) {
     return () => {
       isMounted = false;
       window.clearInterval(intervalId);
-      if (!isMounted) {
-        return;
-      }
     };
   }, [auth.accessToken]);
 

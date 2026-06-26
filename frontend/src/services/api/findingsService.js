@@ -20,4 +20,10 @@ export const findingsService = {
     invalidateCache([FINDINGS_CACHE_KEY, "alerts:list"]);
     return data;
   },
+
+  async resolve(findingId) {
+    const data = await apiAuthRequest(`/findings/${findingId}/resolve`, { method: "POST" });
+    invalidateCache([FINDINGS_CACHE_KEY, "alerts:list"]);
+    return data;
+  },
 };

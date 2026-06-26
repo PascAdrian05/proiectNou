@@ -9,6 +9,7 @@ class Token(BaseModel):
     token_type: str = "bearer"
     role: str | None = None
     tenant_id: str | None = None
+    email: str | None = None
 
 
 class TokenPayload(BaseModel):

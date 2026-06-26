@@ -1,229 +1,215 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { toast } from "react-hot-toast";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import {
+  AlertTriangle, Bug, Info, Shield, ExternalLink, ChevronDown, ChevronRight,
+  Globe, RefreshCw, Search
+} from "lucide-react";
 import { findingsService } from "../services/api/findingsService";
+import { scansService } from "../services/api/scansService";
 import { websitesService } from "../services/api/websitesService";
-import { aiService } from "../services/api/aiService";
-import { useToast } from "../context/ToastContext";
-import { useAuth } from "../context/AuthContext";
-import { FindingCard } from "../components/FindingCard";
-import { QuickFixes } from "../components/QuickFixes";
-import { enrichFinding } from "../utils/findingLabels";
-import { createEventSource } from "../services/api/eventStream";
+import { formatDistanceToNow } from "../lib/utils";
 
-const SEVERITY_OPTIONS = ["all", "critical", "high", "medium", "low", "info"];
+const severityConfig = {
+  critical: { icon: AlertTriangle, color: "text-error", bg: "bg-error/10", border: "border-error/30", badge: "badge-error" },
+  high: { icon: AlertTriangle, color: "text-warning", bg: "bg-warning/10", border: "border-warning/30", badge: "badge-warning" },
+  medium: { icon: Bug, color: "text-info", bg: "bg-info/10", border: "border-info/30", badge: "badge-info" },
+  low: { icon: Info, color: "text-base-content/60", bg: "bg-base-200", border: "border-base-300", badge: "badge-ghost" },
+};
 
 export function FindingsPage() {
-  const toast = useToast();
-  const { isAuthenticated } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [findings, setFindings] = useState([]);
   const [websites, setWebsites] = useState([]);
-  const [error, setError] = useState("");
-  const [isBusy, setIsBusy] = useState(false);
-  const [search, setSearch] = useState("");
+  const [websiteId, setWebsiteId] = useState(searchParams.get("website_id") || "");
+  const [scanId, setScanId] = useState(searchParams.get("scan_id") || "");
   const [severityFilter, setSeverityFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [aiResults, setAiResults] = useState({});
-  const [aiLoading, setAiLoading] = useState({});
+  const [loading, setLoading] = useState(true);
 
-  async function loadFindings() {
-    setError("");
-    setIsBusy(true);
-    try {
-      const [findingData, websiteData] = await Promise.all([
-        findingsService.list(),
-        websitesService.list(),
-      ]);
-      setFindings(findingData);
-      setWebsites(websiteData);
-    } catch (loadError) {
-      setError(loadError.message || "Could not load findings");
-    } finally {
-      setIsBusy(false);
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const data = await websitesService.list();
+        if (!cancelled) setWebsites(data);
+      } catch {}
     }
-  }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  const loadFindings = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await findingsService.list();
+      setFindings(data || []);
+    } catch (err) {
+      if (err.status !== 404) {
+        toast.error("Eroare la incarcarea constatarilor.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     loadFindings();
-  }, []);
+  }, [loadFindings]);
 
-  useEffect(() => {
-    const session = localStorage.getItem("authSession");
-    const parsedSession = session ? JSON.parse(session) : null;
-    const source = createEventSource(`/api/v1/events/findings/stream`, {
-      session: parsedSession,
-    });
-
-    source.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      if (payload?.findings) {
-        setFindings((current) => {
-          const updated = new Map(current.map((finding) => [finding.id, finding]));
-          for (const remote of payload.findings) {
-            updated.set(remote.id, { ...updated.get(remote.id), ...remote });
-          }
-          return Array.from(updated.values());
-        });
-      }
-    };
-
-    source.onerror = () => {
-      source.close();
-    };
-
-    return () => {
-      source.close();
-    };
-  }, []);
-
-  const websiteMap = useMemo(
-    () => new Map(websites.map((website) => [String(website.id), website.domain])),
-    [websites],
-  );
-
-  const filteredFindings = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return findings.filter((finding) => {
-      const enriched = enrichFinding(finding);
-      const matchesSearch =
-        !query ||
-        enriched.humanTitle.toLowerCase().includes(query) ||
-        enriched.humanSummary.toLowerCase().includes(query) ||
-        String(finding.kind || "").toLowerCase().includes(query) ||
-        String(websiteMap.get(String(finding.website_id)) || "").toLowerCase().includes(query);
-
-      const matchesSeverity =
-        severityFilter === "all" ||
-        String(finding.severity || "").toLowerCase() === severityFilter;
-
-      const matchesStatus =
-        statusFilter === "all" ||
-        String(finding.status || "open").toLowerCase() === statusFilter;
-
-      return matchesSearch && matchesSeverity && matchesStatus;
-    });
-  }, [findings, search, severityFilter, statusFilter, websiteMap]);
-
-  async function deleteFinding(findingId) {
-    const confirmed = window.confirm("Delete this finding and its related alerts?");
-    if (!confirmed) {
-      return;
-    }
-
-    setError("");
-    setIsBusy(true);
-    try {
-      await findingsService.remove(findingId);
-      await loadFindings();
-      toast.success("Finding deleted.");
-    } catch (deleteError) {
-      setError(deleteError.message || "Could not delete finding");
-      toast.error(deleteError.message || "Could not delete finding");
-      setIsBusy(false);
-    }
+  function handleWebsiteChange(wid) {
+    setWebsiteId(wid);
+    setScanId("");
+    setSeverityFilter("all");
+    const params = new URLSearchParams(searchParams);
+    if (wid) params.set("website_id", wid); else params.delete("website_id");
+    params.delete("scan_id");
+    setSearchParams(params, { replace: true });
   }
 
-  async function onAnalyzeFinding(findingId) {
-    setAiLoading((prev) => ({ ...prev, [findingId]: true }));
-    setAiResults((prev) => ({ ...prev, [findingId]: null }));
-    try {
-      const data = await aiService.analyzeFinding(findingId);
-      setAiResults((prev) => ({ ...prev, [findingId]: data }));
-      if (!data.available) {
-        toast.error(data.message || "AI analysis unavailable");
-      }
-    } catch (err) {
-      setAiResults((prev) => ({ ...prev, [findingId]: { available: false, message: err.message || "Analysis failed" } }));
-      toast.error(err.message || "AI analysis failed");
-    } finally {
-      setAiLoading((prev) => ({ ...prev, [findingId]: false }));
-    }
+  function handleScanChange(sid) {
+    setScanId(sid);
+    const params = new URLSearchParams(searchParams);
+    if (sid) params.set("scan_id", sid); else params.delete("scan_id");
+    setSearchParams(params, { replace: true });
+  }
+
+  // Filter findings client-side
+  const filteredFindings = findings.filter((f) => {
+    if (websiteId && f.website_id !== websiteId) return false;
+    if (scanId && f.scan_run_id !== scanId) return false;
+    if (severityFilter !== "all" && f.severity !== severityFilter) return false;
+    return true;
+  });
+
+  async function handleRefresh() {
+    await loadFindings();
+    toast.success("Lista actualizata");
   }
 
   return (
-    <section className="page-card">
-      <div className="list-header">
-        <h2>Findings</h2>
-        <button type="button" onClick={loadFindings} disabled={isBusy || !isAuthenticated}>Refresh</button>
-      </div>
-      <p className="hint">Clear explanations and step-by-step fixes for every security issue.</p>
-
-      <div className="control-row filters-row">
-        <input
-          type="search"
-          placeholder="Search by title, site, kind..."
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-        />
-        <select value={severityFilter} onChange={(event) => setSeverityFilter(event.target.value)}>
-          {SEVERITY_OPTIONS.map((option) => (
-            <option key={option} value={option}>
-              {option === "all" ? "All severities" : option}
-            </option>
-          ))}
-        </select>
-        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-          <option value="all">All statuses</option>
-          <option value="open">Open</option>
-          <option value="resolved">Resolved</option>
-        </select>
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">Constatari</h1>
+          <p className="text-base-content/60">
+            {findings.length > 0
+              ? `${filteredFindings.length} din ${findings.length} constatari`
+              : "Vulnerabilitati descoperite in scanari"}
+          </p>
+        </div>
+        <button className="btn btn-outline btn-sm" onClick={handleRefresh} disabled={loading}>
+          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+          Refresh
+        </button>
       </div>
 
-      <p className="hint">{filteredFindings.length} of {findings.length} findings shown</p>
-      {error && <p className="error-text">{error}</p>}
+      <div className="card bg-base-100 shadow-lg">
+        <div className="card-body p-4">
+          <div className="flex flex-col sm:flex-row gap-3">
+            <label className="form-control flex-1">
+              <div className="label py-0 pb-1">
+                <span className="label-text text-xs">Site</span>
+              </div>
+              <select className="select select-bordered select-sm w-full" value={websiteId} onChange={(e) => handleWebsiteChange(e.target.value)}>
+                <option value="">Toate site-urile</option>
+                {websites.map((w) => (
+                  <option key={w.id} value={w.id}>{w.domain || w.url}</option>
+                ))}
+              </select>
+            </label>
+          </div>
 
-      <QuickFixes findings={findings} />
+          {findings.length > 0 && (
+            <div className="flex flex-wrap gap-2 mt-3">
+              {["critical", "high", "medium", "low"].map((sev) => {
+                const cfg = severityConfig[sev];
+                const count = findings.filter((f) => f.severity === sev).length;
+                if (count === 0) return null;
+                return (
+                  <button
+                    key={sev}
+                    onClick={() => setSeverityFilter(severityFilter === sev ? "all" : sev)}
+                    className={`badge ${cfg.badge} gap-1 cursor-pointer transition-all hover:scale-105 ${severityFilter === sev ? "ring-2 ring-offset-1 ring-base-content/40" : "badge-outline"}`}
+                  >
+                    {count} {sev}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
 
-        <div className="findings-list">
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <span className="loading loading-spinner loading-lg text-primary" />
+        </div>
+      ) : filteredFindings.length === 0 ? (
+        <div className="card bg-base-100 shadow-lg">
+          <div className="card-body items-center text-center py-16">
+            <Shield className={`w-10 h-10 ${findings.length > 0 ? "text-success" : "text-base-content/30"} mb-4`} />
+            <h2 className="text-xl font-bold">
+              {findings.length > 0 ? "Nicio constatare cu acest filtru" : "Nicio constatare gasita"}
+            </h2>
+            <p className="text-base-content/60 max-w-md mt-2">
+              {findings.length > 0
+                ? "Incearca sa elimini filtrele aplicate."
+                : "Efectueaza o scanare pentru a descoperi vulnerabilitati."}
+            </p>
+            {findings.length === 0 && (
+              <button className="btn btn-primary mt-6" onClick={() => navigate("/scans")}>
+                <Search className="w-4 h-4" /> Mergi la Scanari
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="grid gap-3">
           {filteredFindings.map((finding) => {
-            const aiResult = aiResults[finding.id];
-            const loading = aiLoading[finding.id];
+            const cfg = severityConfig[finding.severity] || severityConfig.low;
+            const Icon = cfg.icon;
+
             return (
-              <div key={finding.id} className="finding-row">
-                <div className="finding-with-ai">
-                  <FindingCard
-                    finding={finding}
-                    websiteDomain={websiteMap.get(String(finding.website_id))}
-                  />
-                  {aiResult && (
-                    <div className={`ai-finding-result ${aiResult.available ? "" : "ai-finding-unavailable"}`}>
-                      {aiResult.available ? (
-                        <div className="ai-finding-content">
-                          <p><strong>Summary:</strong> {aiResult.summary}</p>
-                          <p><strong>Severity assessment:</strong> {aiResult.severity_assessment}</p>
-                          <p><strong>Recommendation:</strong> {aiResult.recommendation}</p>
-                          <p className="ai-hint"><strong>Confidence:</strong> {aiResult.confidence}</p>
-                          {aiResult.references && (
-                            <p className="ai-hint"><strong>References:</strong> {aiResult.references}</p>
-                          )}
+              <div
+                key={finding.id}
+                className={`card bg-base-100 shadow-lg border-l-4 ${cfg.border} hover:shadow-xl transition-all`}
+              >
+                <div className="card-body p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3 flex-1 min-w-0">
+                      <div className={`p-2 rounded-lg ${cfg.bg} mt-0.5 shrink-0`}>
+                        <Icon className={`w-5 h-5 ${cfg.color}`} />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold truncate">{finding.title}</span>
+                          <span className={`badge badge-sm ${cfg.badge}`}>{finding.severity}</span>
+                          <span className="badge badge-sm badge-ghost">{finding.kind || "general"}</span>
                         </div>
-                      ) : (
-                        <p className="error-text">{aiResult.message}</p>
-                      )}
+                        <p className="text-sm text-base-content/60 mt-0.5">
+                          {finding.created_at && formatDistanceToNow(finding.created_at)}
+                          {finding.status && finding.status !== "open" && (
+                            <span className="ml-2 badge badge-sm badge-ghost">{finding.status}</span>
+                          )}
+                        </p>
+                      </div>
                     </div>
-                  )}
-                  {loading && (
-                    <div className="ai-finding-loading">
-                      <span className="ai-typing" aria-hidden="true">
-                        <span className="ai-dot" />
-                        <span className="ai-dot" />
-                        <span className="ai-dot" />
-                      </span>
-                      <span>AI is analyzing this finding...</span>
-                    </div>
-                  )}
-                </div>
-                <div className="card-actions">
-                  <button type="button" onClick={() => onAnalyzeFinding(finding.id)} disabled={loading || isBusy || !isAuthenticated}>
-                    {loading ? "Analyzing..." : "AI Analyze"}
-                  </button>
-                  <button type="button" className="danger-button" onClick={() => deleteFinding(finding.id)} disabled={isBusy || loading || !isAuthenticated}>
-                    Delete finding
-                  </button>
+                    <a
+                      href={`/findings/${finding.id}`}
+                      className="btn btn-ghost btn-sm btn-square"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                  </div>
                 </div>
               </div>
             );
           })}
-          {!filteredFindings.length && !isBusy && <p className="hint">No findings match your filters.</p>}
         </div>
-    </section>
+      )}
+    </div>
   );
 }
+
+export default FindingsPage;

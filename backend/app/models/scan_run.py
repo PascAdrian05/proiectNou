@@ -10,6 +10,8 @@ class ScanRun(SQLModel, table=True):
     website_id: UUID = Field(foreign_key="website.id", index=True)
     celery_task_id: str | None = Field(default=None, index=True)
     status: str = Field(default="pending", index=True)
+    current_step: str | None = None
+    progress: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     error_message: str | None = None

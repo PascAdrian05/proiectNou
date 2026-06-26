@@ -1,9 +1,10 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, delete, select
 from uuid import UUID
 
 from app.api.deps import get_current_user
+from app.core.cache import cache_get, cache_set, cache_delete_pattern
 from app.core.database import get_session
 from app.core.plan_limits import PlanLimits
 from app.core.subscription_middleware import check_scan_frequency, get_user_plan
@@ -44,7 +45,7 @@ def enqueue_scan(
         session.refresh(subscription)
 
     # Check and reset scan limit if needed (24 hour reset)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if subscription.scan_limit_reset_at and now >= subscription.scan_limit_reset_at:
         subscription.scans_used = 0
         subscription.scan_limit_reset_at = None
@@ -65,7 +66,7 @@ def enqueue_scan(
     ).first()
     
     if last_scan and last_scan.created_at:
-        hours_since_last_scan = (datetime.utcnow() - last_scan.created_at).total_seconds() / 3600
+        hours_since_last_scan = (datetime.now(timezone.utc) - last_scan.created_at).total_seconds() / 3600
         check_scan_frequency(session, str(current_user.tenant_id), int(hours_since_last_scan))
 
     # Increment scan count and set reset time if first scan of the day
@@ -80,10 +81,11 @@ def enqueue_scan(
     session.commit()
     session.refresh(scan_run)
 
-    task = run_full_scan.delay(str(scan_run.id), str(website.id), website.url, website.domain, str(current_user.tenant_id))
+    task = run_full_scan.delay(str(scan_run.id), str(website.id), website.url, website.domain, str(current_user.tenant_id), str(current_user.id))
     scan_run.celery_task_id = task.id
     session.add(scan_run)
     session.commit()
+    cache_delete_pattern(f"scanruns:{current_user.tenant_id}")
 
     return ScanJobResponse(task_id=task.id, scan_run_id=scan_run.id)
 
@@ -93,8 +95,14 @@ def list_scan_runs(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> list[ScanRunRead]:
+    tenant_id = str(current_user.tenant_id)
+    cached = cache_get(f"scanruns:{tenant_id}")
+    if cached is not None:
+        return [ScanRunRead(**item) for item in cached]
     runs = session.exec(select(ScanRun).where(ScanRun.tenant_id == current_user.tenant_id)).all()
-    return [ScanRunRead.model_validate(item) for item in runs]
+    result = [ScanRunRead.model_validate(item) for item in runs]
+    cache_set(f"scanruns:{tenant_id}", [r.model_dump() for r in result], ttl=300)
+    return result
 
 
 @router.get("/limits")
@@ -114,7 +122,7 @@ def get_scan_limits(
         session.refresh(subscription)
 
     # Check and reset scan limit if needed
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if subscription.scan_limit_reset_at and now >= subscription.scan_limit_reset_at:
         subscription.scans_used = 0
         subscription.scan_limit_reset_at = None
@@ -151,6 +159,9 @@ def delete_scan_history(
         deleted_count += 1
 
     session.commit()
+    cache_delete_pattern(f"scanruns:{current_user.tenant_id}")
+    cache_delete_pattern(f"findings:{current_user.tenant_id}")
+    cache_delete_pattern(f"alerts:{current_user.tenant_id}")
     return {"deleted_scan_runs": deleted_count}
 
 
@@ -170,4 +181,7 @@ def delete_scan_run(
     session.exec(delete(Finding).where(Finding.scan_run_id == scan_run.id))
     session.delete(scan_run)
     session.commit()
+    cache_delete_pattern(f"scanruns:{current_user.tenant_id}")
+    cache_delete_pattern(f"findings:{current_user.tenant_id}")
+    cache_delete_pattern(f"alerts:{current_user.tenant_id}")
     return {"status": "deleted"}

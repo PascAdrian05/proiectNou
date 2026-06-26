@@ -6,15 +6,15 @@ export const storage = {
     try {
       const raw = localStorage.getItem(AUTH_STORAGE_KEY);
       if (!raw) {
-        return { accessToken: "", refreshToken: "", role: "", tenantId: "" };
+        return { accessToken: "", refreshToken: "", role: "", tenantId: "", stepUpToken: "" };
       }
       const session = JSON.parse(raw);
       // Validate session has required fields
       if (!session.accessToken || !session.refreshToken) {
         this.clearAuthSession();
-        return { accessToken: "", refreshToken: "", role: "", tenantId: "" };
+        return { accessToken: "", refreshToken: "", role: "", tenantId: "", stepUpToken: "" };
       }
-      return session;
+      return { stepUpToken: "", ...session };
     } catch (error) {
       console.error("Error reading auth session:", error);
       this.clearAuthSession();

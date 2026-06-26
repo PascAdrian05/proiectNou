@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import ai, ai_conversations, alerts, auth, behavior, billing, events, findings, health, oauth, passkeys, presence, reports, scans, status, tenant, trust, users, websites
+from app.api.v1.endpoints import ai, ai_conversations, alerts, auth, behavior, billing, events, findings, health, oauth, passkeys, presence, realtime, reports, scans, status, tenant, trust, users, websites
 
 
 api_router = APIRouter()
@@ -23,3 +23,4 @@ api_router.include_router(ai_conversations.router, prefix="/ai/conversations", t
 api_router.include_router(trust.router, prefix="/trust", tags=["trust"])
 api_router.include_router(status.router, prefix="/status", tags=["status"])
 api_router.include_router(passkeys.router, prefix="/auth", tags=["passkeys"])
+api_router.include_router(realtime.router, prefix="", tags=["realtime"])

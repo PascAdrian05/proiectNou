@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { motion } from "framer-motion";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import { alertsService } from "../services/api/alertsService";
@@ -16,9 +17,13 @@ import { appConfig } from "../config/appConfig";
 import { buildAlertFeed, buildSevenDayTrend, buildWebsiteInsights, getTopIssues } from "../utils/dashboardMetrics";
 import { exportReportCsv } from "../utils/reportExport";
 import { exportReportPdf } from "../utils/reportExportPdf";
+import { AnimatedCounter } from "../components/AnimatedCounter";
 import { BehaviorRiskCard } from "../components/BehaviorRiskCard";
 import { SecurityScoreCard } from "../components/SecurityScoreCard";
+import { SecurityScoreChart } from "../components/SecurityScoreChart";
+import { FindingsPieChart } from "../components/FindingsPieChart";
 import { SeverityBadge } from "../components/SeverityBadge";
+import { SkeletonList } from "../components/SkeletonLoader";
 import { StatCard } from "../components/StatCard";
 
 export function DashboardPage() {
@@ -118,42 +123,22 @@ export function DashboardPage() {
   useEffect(() => {
     let isMounted = true;
 
-    async function loadOnlineUsers() {
+    async function pollRealtime() {
       try {
-        const data = await presenceService.online();
-        if (isMounted) {
-          setOnlineUsers(Number(data?.online_users || 0));
-        }
+        const [presenceData, behaviorData] = await Promise.all([
+          presenceService.online(),
+          behaviorService.getScore(),
+        ]);
+        if (!isMounted) return;
+        setOnlineUsers(Number(presenceData?.online_users || 0));
+        setBehaviorRisk(behaviorData || behaviorRisk);
       } catch {
-        // presence is best-effort
+        // best-effort
       }
     }
 
-    const intervalId = window.setInterval(loadOnlineUsers, 10000);
-    loadOnlineUsers();
-
-    return () => {
-      isMounted = false;
-      window.clearInterval(intervalId);
-    };
-  }, []);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    async function loadBehaviorRisk() {
-      try {
-        const data = await behaviorService.getScore();
-        if (isMounted) {
-          setBehaviorRisk(data || behaviorRisk);
-        }
-      } catch {
-        // behavior scoring is best-effort
-      }
-    }
-
-    const intervalId = window.setInterval(loadBehaviorRisk, 10000);
-    loadBehaviorRisk();
+    const intervalId = window.setInterval(pollRealtime, 15000);
+    pollRealtime();
 
     return () => {
       isMounted = false;
@@ -238,14 +223,19 @@ export function DashboardPage() {
           <button type="button" onClick={() => navigate(appConfig.routes.settings)}>Configure alerts</button>
         </div>
       )}
-      {isLoading && <p className="route-loader">Loading dashboard analytics...</p>}
+      {isLoading && <SkeletonList count={4} height={100} />}
 
-      <div className="kpi-row">
+      <motion.div
+        className="kpi-row"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
         <SecurityScoreCard score={averageScore} trend={trend} />
-        <StatCard label="Websites" value={websiteInsights.length} hint="Monitored domains" />
-        <StatCard label="Open Findings" value={openFindings} hint={`${criticalCount} critical`} accent={criticalCount > 0 ? "bad" : undefined} />
-        <StatCard label="Live Users" value={onlineUsers} hint="Active sessions now" accent="good" />
-      </div>
+        <StatCard label="Websites" value={<AnimatedCounter value={websiteInsights.length} />} hint="Monitored domains" />
+        <StatCard label="Open Findings" value={<AnimatedCounter value={openFindings} />} hint={`${criticalCount} critical`} accent={criticalCount > 0 ? "bad" : undefined} />
+        <StatCard label="Live Users" value={<AnimatedCounter value={onlineUsers} />} hint="Active sessions now" accent="good" />
+      </motion.div>
 
       <div className="dashboard-grid">
         <article>
@@ -299,6 +289,11 @@ export function DashboardPage() {
             ))}
           </div>
         </article>
+      </div>
+
+      <div className="dashboard-charts">
+        <SecurityScoreChart />
+        <FindingsPieChart />
       </div>
 
       <div className="dashboard-grid dashboard-grid-wide">

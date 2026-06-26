@@ -17,6 +17,8 @@ class ScanRunRead(BaseModel):
     id: UUID
     website_id: UUID
     status: str
+    current_step: str | None = None
+    progress: str | None = None
     started_at: datetime | None
     completed_at: datetime | None
     error_message: str | None

@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
 
 
 class Settings(BaseSettings):
@@ -13,8 +14,8 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 14
 
-    frontend_url: str = "http://localhost:8000"
-    cors_origins: str = "http://localhost:8000,http://127.0.0.1:8000"
+    frontend_url: str = "http://localhost:3000"
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000"
 
     auth_max_failed_attempts: int = 5
     auth_lockout_minutes: int = 15
@@ -41,7 +42,20 @@ class Settings(BaseSettings):
 
     groq_api_key: str | None = None
 
+    rate_limit_per_minute: int = 60
+    rate_limit_enabled: bool = True
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra='ignore')
+
+    @field_validator("secret_key")
+    @classmethod
+    def validate_secret_key(cls, v: str) -> str:
+        if v in ("change-me-in-production", "changeme", "secret", "supersecretkeyfordevelopmentonly", ""):
+            raise ValueError(
+                "SECRET_KEY is set to an insecure default. "
+                "Generate a strong random key and set it in .env"
+            )
+        return v
 
 
 settings = Settings()

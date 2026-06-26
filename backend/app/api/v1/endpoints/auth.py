@@ -127,6 +127,7 @@ def register(payload: UserCreate, request: Request, session: Session = Depends(g
         refresh_token=create_refresh_token(subject=str(user.id), tenant_id=str(user.tenant_id), role=user.role),
         role=user.role,
         tenant_id=str(user.tenant_id),
+        email=user.email,
     )
 
 
@@ -145,7 +146,7 @@ def login(
     if is_login_locked(identity):
         raise HTTPException(status_code=429, detail="Account temporarily locked due to failed logins")
 
-    user = session.exec(select(User).where(User.email == form_data.username)).first()
+    user = session.exec(select(User).where(User.email == identity)).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         register_failed_login(identity)
         try:
@@ -247,6 +248,7 @@ def refresh_access_token(payload: TokenRefreshRequest, request: Request, session
         refresh_token=new_refresh,
         role=user.role,
         tenant_id=str(user.tenant_id),
+        email=user.email,
     )
 
 
@@ -672,26 +674,3 @@ def mark_security_setup_completed(
     return {"status": "security_setup_completed"}
 
 
-@router.get("/security-status", response_model=SecurityStatusResponse)
-def get_security_status(
-    current_user: User = Depends(get_current_user),
-) -> SecurityStatusResponse:
-    """Get the current security status of the user."""
-    user = current_user
-    
-    # Calculate security score
-    score = 0
-    if user.totp_enabled:
-        score += 30
-    if user.passkey_enabled:
-        score += 40
-    if user.has_backup_codes:
-        score += 30
-    
-    return SecurityStatusResponse(
-        totp_enabled=user.totp_enabled or False,
-        passkey_enabled=user.passkey_enabled or False,
-        has_backup_codes=user.has_backup_codes or False,
-        security_setup_completed=user.security_setup_completed or False,
-        security_score=score,
-    )

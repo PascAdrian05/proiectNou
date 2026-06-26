@@ -3,6 +3,7 @@ from sqlmodel import Session, delete, select
 from uuid import UUID
 
 from app.api.deps import get_current_user, require_roles
+from app.core.cache import cache_get, cache_set, cache_delete_pattern
 from app.core.database import get_session
 from app.core.subscription_middleware import check_website_limit
 from app.models.alert import Alert
@@ -40,6 +41,7 @@ def create_website(
     session.add(website)
     session.commit()
     session.refresh(website)
+    cache_delete_pattern(f"websites:{current_user.tenant_id}")
     return WebsiteRead.model_validate(website)
 
 
@@ -48,8 +50,14 @@ def list_websites(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> list[WebsiteRead]:
+    tenant_id = str(current_user.tenant_id)
+    cached = cache_get(f"websites:{tenant_id}")
+    if cached is not None:
+        return [WebsiteRead(**item) for item in cached]
     websites = session.exec(select(Website).where(Website.tenant_id == current_user.tenant_id)).all()
-    return [WebsiteRead.model_validate(item) for item in websites]
+    result = [WebsiteRead.model_validate(item) for item in websites]
+    cache_set(f"websites:{tenant_id}", [r.model_dump() for r in result], ttl=300)
+    return result
 
 
 @router.delete("/{website_id}")
@@ -70,4 +78,8 @@ def delete_website(
     session.exec(delete(ScanRun).where(ScanRun.website_id == website.id))
     session.delete(website)
     session.commit()
+    cache_delete_pattern(f"websites:{current_user.tenant_id}")
+    cache_delete_pattern(f"scanruns:{current_user.tenant_id}")
+    cache_delete_pattern(f"findings:{current_user.tenant_id}")
+    cache_delete_pattern(f"alerts:{current_user.tenant_id}")
     return {"status": "deleted"}

@@ -11,11 +11,6 @@ export function SettingsPage() {
     alert_email: "",
     alert_webhook_url: "",
     brand_name: "",
-    notification_digest: "immediate", // immediate, daily, weekly
-    notification_priority: "all", // all, critical_only, high_and_critical
-    quiet_hours_enabled: false,
-    quiet_hours_start: "18:00",
-    quiet_hours_end: "09:00",
   });
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -201,63 +196,6 @@ export function SettingsPage() {
             />
             <span className="field-hint">We'll email you when a critical or high finding is detected.</span>
           </label>
-
-          <label>
-            Notification Digest
-            <select
-              value={form.notification_digest}
-              onChange={(event) => setForm((prev) => ({ ...prev, notification_digest: event.target.value }))}
-            >
-              <option value="immediate">Immediate (real-time alerts)</option>
-              <option value="daily">Daily digest</option>
-              <option value="weekly">Weekly summary</option>
-            </select>
-            <span className="field-hint">Choose how often you want to receive notifications</span>
-          </label>
-
-          <label>
-            Alert Priority Level
-            <select
-              value={form.notification_priority}
-              onChange={(event) => setForm((prev) => ({ ...prev, notification_priority: event.target.value }))}
-            >
-              <option value="all">All findings</option>
-              <option value="high_and_critical">High and critical only</option>
-              <option value="critical_only">Critical only</option>
-            </select>
-            <span className="field-hint">Reduce notification fatigue by filtering by severity</span>
-          </label>
-
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={form.quiet_hours_enabled}
-              onChange={(event) => setForm((prev) => ({ ...prev, quiet_hours_enabled: event.target.checked }))}
-            />
-            Enable Quiet Hours
-            <span className="field-hint">Pause notifications during specified hours</span>
-          </label>
-
-          {form.quiet_hours_enabled && (
-            <>
-              <label>
-                Quiet Hours Start
-                <input
-                  type="time"
-                  value={form.quiet_hours_start}
-                  onChange={(event) => setForm((prev) => ({ ...prev, quiet_hours_start: event.target.value }))}
-                />
-              </label>
-              <label>
-                Quiet Hours End
-                <input
-                  type="time"
-                  value={form.quiet_hours_end}
-                  onChange={(event) => setForm((prev) => ({ ...prev, quiet_hours_end: event.target.value }))}
-                />
-              </label>
-            </>
-          )}
 
           <label>
             Slack / webhook URL

@@ -1,3 +1,5 @@
+import threading
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
@@ -6,11 +8,13 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID
+import redis as sync_redis
 
 from app.api.deps import get_current_user, oauth2_scheme
 from app.core.database import get_session
 from app.core.security import decode_token
 from app.core.token_store import is_token_revoked
+from app.core.config import settings
 from app.models.alert import Alert
 from app.models.finding import Finding
 from app.models.scan_run import ScanRun
@@ -63,7 +67,7 @@ def _get_findings_sync(session: Session, tenant_id: str) -> list:
     return session.exec(
         select(Finding)
         .where(Finding.tenant_id == tenant_id)
-        .order_by(Finding.created_at.desc())
+        .order_by(Finding.first_seen_at.desc())
         .limit(50)
     ).all()
 
@@ -99,36 +103,103 @@ async def stream_scan_updates(
     current_user: User = Depends(_resolve_current_user),
 ):
     async def event_generator():
-        last_check = time.time()
+        event_queue: asyncio.Queue = asyncio.Queue()
+        stop_event = threading.Event()
+        tenant_id_str = str(current_user.tenant_id)
+
+        # Subscribe to Redis pub/sub for instant real-time events
+        def redis_subscriber():
+            r = None
+            pubsub = None
+            try:
+                r = sync_redis.from_url(settings.redis_url, decode_responses=True)
+                pubsub = r.pubsub()
+                pubsub.subscribe("scan:progress", "scan:completed", "ai:completed")
+                for message in pubsub.listen():
+                    if stop_event.is_set():
+                        break
+                    if message["type"] == "message":
+                        try:
+                            payload = json.loads(message["data"])
+                            # Only forward events for this tenant
+                            if payload.get("tenant_id") == tenant_id_str:
+                                loop = asyncio.get_event_loop()
+                                asyncio.run_coroutine_threadsafe(
+                                    event_queue.put(("redis", message["data"])), loop
+                                )
+                        except (json.JSONDecodeError, Exception):
+                            pass
+            except Exception:
+                pass
+            finally:
+                if pubsub:
+                    try:
+                        pubsub.close()
+                    except Exception:
+                        pass
+                if r:
+                    try:
+                        r.close()
+                    except Exception:
+                        pass
+
+        listener_thread = threading.Thread(target=redis_subscriber, daemon=True)
+        listener_thread.start()
+
+        last_db_poll = time.time()
+        last_heartbeat = time.time()
+
         try:
             while True:
-                # Run sync DB query in threadpool to avoid blocking event loop
-                runs = await asyncio.get_event_loop().run_in_executor(
-                    executor, _get_scan_runs_sync, session, str(current_user.tenant_id)
-                )
+                # 1) Check for Redis real-time events (instant)
+                try:
+                    source, data = await asyncio.wait_for(
+                        event_queue.get(), timeout=2.0
+                    )
+                    if source == "redis":
+                        yield f"data: {data}\n\n"
+                        continue
+                except asyncio.TimeoutError:
+                    pass
 
-                payload = {
-                    "timestamp": time.time(),
-                    "runs": [
-                        {
-                            "id": str(run.id),
-                            "status": run.status,
-                            "website_id": str(run.website_id),
-                            "started_at": run.started_at.isoformat() if run.started_at else None,
-                            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-                        }
-                        for run in runs
-                    ],
-                }
+                # 2) Periodic DB poll as fallback / snapshot (every 3s)
+                now = time.time()
+                if now - last_db_poll >= 3.0:
+                    runs = await asyncio.get_event_loop().run_in_executor(
+                        executor,
+                        _get_scan_runs_sync,
+                        session,
+                        tenant_id_str,
+                    )
 
-                yield f"data: {json.dumps(payload)}\n\n"
-                last_check = time.time()
+                    payload = {
+                        "timestamp": now,
+                        "runs": [
+                            {
+                                "id": str(run.id),
+                                "status": run.status,
+                                "current_step": run.current_step,
+                                "progress": run.progress,
+                                "website_id": str(run.website_id),
+                                "started_at": run.started_at.isoformat() if run.started_at else None,
+                                "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+                            }
+                            for run in runs
+                        ],
+                    }
 
-                # Send heartbeat every 15 seconds to keep connection alive
-                await asyncio.sleep(15)
-                yield ": heartbeat\n\n"
+                    yield f"data: {json.dumps(payload)}\n\n"
+                    last_db_poll = now
+
+                # Heartbeat every 15s to keep connection alive
+                if now - last_heartbeat >= 15:
+                    yield ": heartbeat\n\n"
+                    last_heartbeat = now
+
         except asyncio.CancelledError:
             pass
+        finally:
+            stop_event.set()
 
     return StreamingResponse(
         event_generator(),
@@ -208,7 +279,7 @@ async def stream_finding_updates(
                             "title": finding.title,
                             "website_id": str(finding.website_id),
                             "scan_run_id": str(finding.scan_run_id),
-                            "created_at": finding.created_at.isoformat() if finding.created_at else None,
+                            "first_seen_at": finding.first_seen_at.isoformat() if finding.first_seen_at else None,
                         }
                         for finding in findings
                     ],

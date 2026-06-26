@@ -1,267 +1,338 @@
-import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { appConfig } from "../config/appConfig";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { toast } from "react-hot-toast";
+import { Plus, Globe, Activity, Clock, Shield, Search, X, AlertTriangle } from "lucide-react";
+import { useAuth } from "../context/AuthContext";
 import { scansService } from "../services/api/scansService";
 import { websitesService } from "../services/api/websitesService";
-import { createEventSource } from "../services/api/eventStream";
-import { useToast } from "../context/ToastContext";
-import { useAuth } from "../context/AuthContext";
-
-function formatTimestamp(value) {
-  if (!value) {
-    return "n/a";
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString();
-}
+import { formatDistanceToNow } from "../lib/utils";
 
 export function ScansPage() {
-  const navigate = useNavigate();
-  const { success, error: showError } = useToast();
-  const { isAuthenticated } = useAuth();
-  const [websiteId, setWebsiteId] = useState("");
+  const { auth } = useAuth();
   const [websites, setWebsites] = useState([]);
-  const [runs, setRuns] = useState([]);
-  const [error, setError] = useState("");
-  const [isBusy, setIsBusy] = useState(false);
-  const [scanLimits, setScanLimits] = useState(null);
-  const [timeUntilReset, setTimeUntilReset] = useState(null);
-  const previousStatusRef = useRef({});
+  const [scans, setScans] = useState([]);
+  const [websiteId, setWebsiteId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [scanning, setScanning] = useState(false);
+  const [scanningProgress, setScanningProgress] = useState(null);
+  const [showAddWebsite, setShowAddWebsite] = useState(false);
+  const [addUrl, setAddUrl] = useState("");
+  const [addingWebsite, setAddingWebsite] = useState(false);
+  const pollRef = useRef(null);
 
-  async function loadData(forceRefresh = false) {
-    setError("");
-    setIsBusy(true);
-    try {
-      const [websiteData, runData, limitsData] = await Promise.all([
-        websitesService.list(),
-        scansService.listRuns(forceRefresh),
-        scansService.getLimits()
-      ]);
-      setWebsites(websiteData);
-      setRuns(runData);
-      setScanLimits(limitsData);
-      if (!websiteId && websiteData.length > 0) {
-        setWebsiteId(websiteData[0].id);
+  // Load websites once
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const data = await websitesService.list();
+        if (!cancelled) setWebsites(data);
+      } catch {
+        if (!cancelled) toast.error("Nu s-au putut incarca site-urile.");
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    } catch (loadError) {
-      setError(loadError.message || "Could not load scans data");
-    } finally {
-      setIsBusy(false);
     }
-  }
+    load();
+    return () => { cancelled = true; };
+  }, []);
 
-  function formatTimeRemaining(seconds) {
-    if (seconds <= 0) return "0h 0m";
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    return `${hours}h ${minutes}m`;
-  }
+  const loadScans = useCallback(async () => {
+    try {
+      const data = await scansService.listRuns();
+      setScans(data || []);
+    } catch {
+      toast.error("Nu s-au putut incarca scanarile.");
+    }
+  }, []);
 
   useEffect(() => {
-    if (!scanLimits?.scan_limit_reset_at) return;
+    loadScans();
+  }, [loadScans]);
 
-    const resetTime = new Date(scanLimits.scan_limit_reset_at);
-    const updateTimer = () => {
-      const now = new Date();
-      const diff = Math.max(0, Math.floor((resetTime - now) / 1000));
-      setTimeUntilReset(diff);
-    };
-
-    updateTimer();
-    const interval = setInterval(updateTimer, 1000);
-
-    return () => clearInterval(interval);
-  }, [scanLimits]);
-
-  async function enqueueScan() {
-    if (!websiteId) {
-      setError("Please select a website first.");
-      return;
+  async function handleAddWebsite(e) {
+    e.preventDefault();
+    if (!addUrl.trim()) return;
+    setAddingWebsite(true);
+    try {
+      const domain = addUrl.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+      const newWebsite = await websitesService.create({
+        domain,
+        url: addUrl.trim(),
+      });
+      setWebsites((prev) => [...prev, newWebsite]);
+      setWebsiteId(newWebsite.id);
+      setAddUrl("");
+      setShowAddWebsite(false);
+      toast.success(`Site adaugat: ${newWebsite.domain || domain}`);
+    } catch (err) {
+      toast.error(err.message || "Eroare la adaugarea site-ului.");
+    } finally {
+      setAddingWebsite(false);
     }
+  }
 
-    if (scanLimits && !scanLimits.can_scan) {
-      setError(scanLimits.remaining_scans === 0 
-        ? "Daily scan limit reached. Please upgrade your plan or wait for reset." 
-        : "Scan limit reached.");
-      return;
-    }
-
-    setError("");
-    setIsBusy(true);
+  async function handleStartScan() {
+    if (!websiteId) return;
+    setScanning(true);
+    setScanningProgress(null);
     try {
       await scansService.enqueue({ website_id: websiteId });
-      success("Scan enqueued successfully");
-      await loadData(true);
-    } catch (enqueueError) {
-      const errorMsg = enqueueError.message || "Could not enqueue scan";
-      setError(errorMsg);
-      showError(errorMsg);
-      setIsBusy(false);
+      toast.success("Scanare pornita!");
+      loadScans();
+      startPolling();
+    } catch (err) {
+      setScanning(false);
+      toast.error(err.message || "Eroare la pornirea scanarii.");
     }
   }
 
-  async function deleteScan(scanRunId) {
-    setError("");
-    setIsBusy(true);
-    try {
-      await scansService.remove(scanRunId);
-      success("Scan deleted successfully");
-      await loadData(true);
-    } catch (deleteError) {
-      setError(deleteError.message || "Could not delete scan run");
-      setIsBusy(false);
-    }
-  }
-
-  async function deleteAllScans() {
-    const confirmed = window.confirm("Delete all scan history for this tenant? This will remove related findings and alerts too.");
-    if (!confirmed) {
-      return;
-    }
-
-    setError("");
-    setIsBusy(true);
-    try {
-      await scansService.removeAll();
-      await loadData(true);
-    } catch (deleteError) {
-      setError(deleteError.message || "Could not delete scan history");
-      setIsBusy(false);
-    }
-  }
-
-  useEffect(() => {
-    loadData(true);
-  }, []);
-
-  useEffect(() => {
-    const session = localStorage.getItem("authSession");
-    const parsedSession = session ? JSON.parse(session) : null;
-    const source = createEventSource(`${appConfig.apiBaseUrl}/events/scans/stream`, {
-      session: parsedSession,
-    });
-
-    source.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      if (payload?.runs) {
-        setRuns((current) => {
-          const updated = new Map(current.map((run) => [run.id, run]));
-          for (const remote of payload.runs) {
-            const previous = previousStatusRef.current[remote.id];
-            const next = { ...updated.get(remote.id), ...remote };
-            updated.set(remote.id, next);
-
-            if (
-              previous &&
-              previous !== "completed" &&
-              previous !== "failed" &&
-              (next.status === "completed" || next.status === "failed")
-            ) {
-              if (next.status === "completed") {
-                success(`Scan finished successfully for website ${next.website_id}`);
-              } else {
-                showError(`Scan failed for website ${next.website_id}`);
-              }
-            }
-
-            previousStatusRef.current[remote.id] = next.status;
-          }
-          return Array.from(updated.values());
-        });
+  function startPolling() {
+    stopPolling();
+    pollRef.current = window.setInterval(async () => {
+      try {
+        const data = await scansService.listRuns(true);
+        setScans(data || []);
+        const running = data?.some((s) => s.status === "running" || s.status === "pending");
+        if (!running) {
+          stopPolling();
+          setScanning(false);
+          setScanningProgress(null);
+        }
+      } catch {
+        stopPolling();
+        setScanning(false);
       }
-    };
+    }, 3000);
+  }
 
-    source.onerror = () => {
-      source.close();
-    };
+  function stopPolling() {
+    if (pollRef.current) {
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }
 
-    return () => {
-      source.close();
-    };
+  useEffect(() => {
+    return stopPolling;
   }, []);
 
-  const websiteMap = new Map(websites.map((website) => [website.id, website.domain]));
+  const selectedWebsite = websites.find((w) => w.id === websiteId);
+  const websiteScans = websiteId
+    ? scans.filter((s) => s.website_id === websiteId)
+    : scans;
+  const latestScan = websiteScans.length > 0 ? websiteScans[0] : null;
+
+  const statusBadge = {
+    completed: "badge-success",
+    running: "badge-info",
+    pending: "badge-warning",
+    failed: "badge-error",
+  };
+
+  const scanResult = {
+    completed: { icon: Shield, text: "Finalizata", color: "text-success" },
+    running: { icon: Activity, text: "In desfasurare", color: "text-info" },
+    pending: { icon: Clock, text: "In asteptare", color: "text-warning" },
+    failed: { icon: AlertTriangle, text: "Esuata", color: "text-error" },
+  };
 
   return (
-    <section className="page-card">
-      <h2>Scans</h2>
-      <p className="hint">Enqueue scans and inspect scan run history.</p>
-
-      {scanLimits && (
-        <div className={`scan-limits-banner ${!scanLimits.can_scan ? 'limit-reached' : ''}`}>
-          <div className="scan-limits-info">
-            <span className="scan-limits-text">
-              <strong>Plan:</strong> {scanLimits.plan.toUpperCase()} | 
-              <strong> Scans:</strong> {scanLimits.scans_used}/{scanLimits.scans_limit === -1 ? '∞' : scanLimits.scans_limit}
-              {scanLimits.remaining_scans > 0 && ` (${scanLimits.remaining_scans} remaining)`}
-            </span>
-            {!scanLimits.can_scan && timeUntilReset !== null && (
-              <span className="reset-timer">
-                Resets in: <strong>{formatTimeRemaining(timeUntilReset)}</strong>
-              </span>
-            )}
-          </div>
-          {!scanLimits.can_scan && (
-            <div className="limit-message">
-              ⚠️ Daily scan limit reached. Upgrade your plan for unlimited scans.
+    <div className="space-y-6">
+      {showAddWebsite && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-base-300/80 backdrop-blur-sm" onClick={() => setShowAddWebsite(false)}>
+          <div className="card w-full max-w-md bg-base-100 shadow-2xl mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="card-body">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-lg font-bold">Adauga Site</h3>
+                <button className="btn btn-ghost btn-sm btn-square" onClick={() => setShowAddWebsite(false)}>
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <form onSubmit={handleAddWebsite} className="space-y-4">
+                <label className="form-control">
+                  <div className="label">
+                    <span className="label-text">URL-ul site-ului</span>
+                  </div>
+                  <input
+                    type="url"
+                    placeholder="https://exemplu.ro"
+                    className="input input-bordered w-full"
+                    value={addUrl}
+                    onChange={(e) => setAddUrl(e.target.value)}
+                    required
+                    disabled={addingWebsite}
+                  />
+                </label>
+                <button type="submit" className="btn btn-primary w-full" disabled={addingWebsite || !addUrl.trim()}>
+                  {addingWebsite ? <span className="loading loading-spinner" /> : <Plus className="w-4 h-4" />}
+                  {addingWebsite ? "Se adauga..." : "Adauga"}
+                </button>
+              </form>
             </div>
-          )}
+          </div>
         </div>
       )}
 
-      <div className="control-row">
-        <select value={websiteId} onChange={(event) => setWebsiteId(event.target.value)} disabled={!isAuthenticated}>
-          <option value="">Select website</option>
-          {websites.map((website) => (
-            <option key={website.id} value={website.id}>
-              {website.domain}
-            </option>
-          ))}
-        </select>
-        <button 
-          type="button" 
-          onClick={enqueueScan} 
-          disabled={isBusy || !isAuthenticated || (scanLimits && !scanLimits.can_scan)}
-          className={!scanLimits?.can_scan ? 'disabled-button' : ''}
-        >
-          {scanLimits && !scanLimits.can_scan ? 'Limit Reached' : 'Run Scan'}
-        </button>
-        <button type="button" onClick={loadData} disabled={isBusy || !isAuthenticated}>Refresh</button>
-      </div>
-
-      <div className="dashboard-actions scans-actions">
-        <button type="button" className="danger-button" onClick={deleteAllScans} disabled={isBusy || runs.length === 0 || !isAuthenticated}>
-          Delete all scan history
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">Scanari</h1>
+          <p className="text-base-content/60">Gestioneaza scanarile de securitate</p>
+        </div>
+        <button className="btn btn-primary" onClick={() => setShowAddWebsite(true)}>
+          <Plus className="w-4 h-4" />
+          Adauga Site
         </button>
       </div>
 
-      {error && <p className="error-text">{error}</p>}
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <span className="loading loading-spinner loading-lg text-primary" />
+        </div>
+      ) : websites.length === 0 ? (
+        <div className="card bg-base-100 shadow-lg">
+          <div className="card-body items-center text-center py-16">
+            <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mb-4">
+              <Globe className="w-10 h-10 text-primary" />
+            </div>
+            <h2 className="text-xl font-bold">Niciun site adaugat</h2>
+            <p className="text-base-content/60 max-w-md mt-2">
+              Adauga un site pentru a incepe scanarile de securitate.
+            </p>
+            <button className="btn btn-primary mt-6" onClick={() => setShowAddWebsite(true)}>
+              <Plus className="w-4 h-4" /> Adauga primul site
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="card bg-base-100 shadow-lg">
+            <div className="card-body">
+              <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-end">
+                <label className="form-control flex-1 w-full">
+                  <div className="label">
+                    <span className="label-text">Selecteaza site-ul</span>
+                  </div>
+                  <select
+                    className="select select-bordered w-full"
+                    value={websiteId}
+                    onChange={(e) => setWebsiteId(e.target.value)}
+                  >
+                    <option value="">-- Alege un site --</option>
+                    {websites.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.domain || w.url}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
-      <div className="list-grid">
-        {runs.map((run) => (
-          <article key={run.id}>
-            <h4>{run.status}</h4>
-            <p><strong>Scan ID:</strong> {run.id}</p>
-            <p><strong>Website:</strong> {websiteMap.get(run.website_id) || run.website_id}</p>
-            <p><strong>Started:</strong> {formatTimestamp(run.started_at)}</p>
-            <p><strong>Finished:</strong> {formatTimestamp(run.completed_at)}</p>
-              <div className="card-actions">
-                <button type="button" onClick={() => navigate(appConfig.routes.scanDetails.replace(":scanId", run.id))} disabled={!isAuthenticated}>
-                  View details
-                </button>
-                <button type="button" className="danger-button" onClick={() => deleteScan(run.id)} disabled={isBusy || !isAuthenticated}>
-                  Delete scan
+                {websiteId && (
+                  <button
+                    className="btn btn-primary w-full sm:w-auto"
+                    onClick={handleStartScan}
+                    disabled={scanning}
+                  >
+                    {scanning ? (
+                      <span className="loading loading-spinner loading-sm" />
+                    ) : (
+                      <Search className="w-4 h-4" />
+                    )}
+                    {scanning ? "Se scaneaza..." : "Porneste scanarea"}
+                  </button>
+                )}
+              </div>
+
+              {scanningProgress != null && (
+                <div className="mt-4">
+                  <div className="flex justify-between text-sm mb-1">
+                    <span>Progres</span>
+                    <span>{Math.round(scanningProgress)}%</span>
+                  </div>
+                  <progress className="progress progress-primary w-full" value={scanningProgress} max="100" />
+                </div>
+              )}
+
+              {selectedWebsite && (
+                <div className="flex flex-wrap gap-2 mt-3">
+                  <div className="badge badge-outline gap-1">
+                    <Globe className="w-3 h-3" />
+                    {selectedWebsite.domain || selectedWebsite.url}
+                  </div>
+                  {latestScan && (
+                    <div className="badge badge-outline gap-1">
+                      <Activity className="w-3 h-3" />
+                      Ultima: {formatDistanceToNow(latestScan.created_at)}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {!websiteId ? (
+            <div className="card bg-base-100 shadow-lg">
+              <div className="card-body items-center text-center py-12">
+                <Search className="w-8 h-8 text-base-content/40 mb-3" />
+                <p className="text-base-content/60">Selecteaza un site</p>
+              </div>
+            </div>
+          ) : websiteScans.length === 0 && !scanning ? (
+            <div className="card bg-base-100 shadow-lg">
+              <div className="card-body items-center text-center py-12">
+                <Shield className="w-8 h-8 text-base-content/40 mb-3" />
+                <p className="text-base-content/60">Nicio scanare pentru acest site</p>
+                <button className="btn btn-primary btn-sm mt-4" onClick={handleStartScan}>
+                  <Search className="w-4 h-4" /> Prima scanare
                 </button>
               </div>
-          </article>
-        ))}
-        {!runs.length && !isBusy && <p className="hint">No scan runs yet.</p>}
-      </div>
-    </section>
+            </div>
+          ) : (
+            <div className="grid gap-4">
+              {websiteScans.map((scan) => {
+                const result = scanResult[scan.status] || scanResult.pending;
+                const Icon = result.icon;
+                return (
+                  <div key={scan.id} className="card bg-base-100 shadow-lg hover:shadow-xl transition-shadow">
+                    <div className="card-body p-5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className={`p-2 rounded-lg bg-base-200 ${result.color}`}>
+                            <Icon className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold">Scanare</span>
+                              <span className={`badge badge-sm ${statusBadge[scan.status] || "badge-ghost"}`}>
+                                {scan.status}
+                              </span>
+                            </div>
+                            <p className="text-sm text-base-content/60">
+                              {formatDistanceToNow(scan.created_at)}
+                            </p>
+                          </div>
+                        </div>
+                        <a
+                          href={`/findings?scan_id=${scan.id}`}
+                          className="btn btn-ghost btn-sm"
+                        >
+                          Vezi constatarile
+                        </a>
+                      </div>
+                      {scan.progress && scan.status === "running" && (
+                        <div className="mt-3">
+                          <progress className="progress progress-primary w-full" value={0} max="100" />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
+
+export default ScansPage;

@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 
 from app.core.config import settings
 
@@ -18,5 +19,13 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
 )
 
+celery_app.conf.beat_schedule = {
+    "check-scheduled-scans": {
+        "task": "scan.check_scheduled",
+        "schedule": 60.0,
+    },
+}
+
 
 import app.tasks.scan_tasks  # noqa: E402,F401
+import app.tasks.scheduled_tasks  # noqa: E402,F401

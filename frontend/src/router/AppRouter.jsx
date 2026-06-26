@@ -29,6 +29,21 @@ function ProtectedRoute({ children }) {
   return children;
 }
 
+function GuestRoute({ children }) {
+  const { isAuthenticated } = useAuth();
+
+  if (isAuthenticated) {
+    return <Navigate to={appConfig.routes.dashboard} replace />;
+  }
+
+  return children;
+}
+
+function RootRedirect() {
+  const { isAuthenticated } = useAuth();
+  return <Navigate to={isAuthenticated ? appConfig.routes.dashboard : appConfig.routes.login} replace />;
+}
+
 function RouteLoader() {
   return <p className="route-loader">Loading module...</p>;
 }
@@ -40,6 +55,8 @@ function LazyRoute({ children }) {
 export function AppRouter() {
   return (
     <Routes>
+      <Route path="/" element={<RootRedirect />} />
+
       <Route
         path={appConfig.routes.publicReport}
         element={
@@ -48,24 +65,29 @@ export function AppRouter() {
           </LazyRoute>
         }
       />
+
+      <Route
+        path={appConfig.routes.login}
+        element={
+          <GuestRoute>
+            <LazyRoute>
+              <div className="auth-standalone"><LoginPage /></div>
+            </LazyRoute>
+          </GuestRoute>
+        }
+      />
+      <Route
+        path={appConfig.routes.register}
+        element={
+          <GuestRoute>
+            <LazyRoute>
+              <div className="auth-standalone"><RegisterPage /></div>
+            </LazyRoute>
+          </GuestRoute>
+        }
+      />
+
       <Route element={<AppLayout />}>
-        <Route path="/" element={<Navigate to={appConfig.routes.login} replace />} />
-        <Route
-          path={appConfig.routes.login}
-          element={
-            <LazyRoute>
-              <LoginPage />
-            </LazyRoute>
-          }
-        />
-        <Route
-          path={appConfig.routes.register}
-          element={
-            <LazyRoute>
-              <RegisterPage />
-            </LazyRoute>
-          }
-        />
         <Route
           path={appConfig.routes.dashboard}
           element={

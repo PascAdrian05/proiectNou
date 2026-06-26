@@ -42,4 +42,8 @@ export const aiService = {
   async deleteConversation(conversationId) {
     return apiAuthRequest(`/ai/conversations/${conversationId}`, { method: "DELETE" });
   },
+
+  async autoFixFinding(findingId) {
+    return apiAuthRequest(`/ai/auto-fix/${findingId}`, { method: "POST" });
+  },
 };
