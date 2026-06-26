@@ -13,3 +13,8 @@ class Subscription(SQLModel, table=True):
     stripe_subscription_id: str | None = Field(default=None, index=True)
     current_period_end: datetime | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    # Scan limit tracking
+    scans_used: int = Field(default=0)
+    scans_limit: int = Field(default=10)  # Free plan: 10 scans per day
+    scan_limit_reset_at: datetime | None = Field(default=None)

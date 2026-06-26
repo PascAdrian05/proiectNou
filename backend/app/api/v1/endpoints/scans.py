@@ -5,10 +5,12 @@ from uuid import UUID
 
 from app.api.deps import get_current_user
 from app.core.database import get_session
+from app.core.plan_limits import PlanLimits
 from app.core.subscription_middleware import check_scan_frequency, get_user_plan
 from app.models.alert import Alert
 from app.models.finding import Finding
 from app.models.scan_run import ScanRun
+from app.models.subscription import Subscription
 from app.models.user import User
 from app.models.website import Website
 from app.schemas.scan import ScanJobResponse, ScanRequest, ScanRunRead
@@ -30,6 +32,31 @@ def enqueue_scan(
     if not website:
         raise HTTPException(status_code=404, detail="Website not found")
 
+    # Get user's subscription
+    subscription = session.exec(
+        select(Subscription).where(Subscription.tenant_id == current_user.tenant_id)
+    ).first()
+    
+    if not subscription:
+        subscription = Subscription(tenant_id=current_user.tenant_id, plan="free", status="active")
+        session.add(subscription)
+        session.commit()
+        session.refresh(subscription)
+
+    # Check and reset scan limit if needed (24 hour reset)
+    now = datetime.utcnow()
+    if subscription.scan_limit_reset_at and now >= subscription.scan_limit_reset_at:
+        subscription.scans_used = 0
+        subscription.scan_limit_reset_at = None
+        session.add(subscription)
+        session.commit()
+
+    # Check scan count limit based on subscription plan
+    plan = subscription.plan or "free"
+    can_scan_count, count_error = PlanLimits.can_scan_by_count(plan, subscription.scans_used, subscription.scans_limit)
+    if not can_scan_count:
+        raise HTTPException(status_code=429, detail=count_error)
+
     # Check scan frequency limit based on subscription plan
     last_scan = session.exec(
         select(ScanRun)
@@ -40,6 +67,13 @@ def enqueue_scan(
     if last_scan and last_scan.created_at:
         hours_since_last_scan = (datetime.utcnow() - last_scan.created_at).total_seconds() / 3600
         check_scan_frequency(session, str(current_user.tenant_id), int(hours_since_last_scan))
+
+    # Increment scan count and set reset time if first scan of the day
+    subscription.scans_used += 1
+    if subscription.scans_used == 1:
+        subscription.scan_limit_reset_at = now + timedelta(hours=24)
+    session.add(subscription)
+    session.commit()
 
     scan_run = ScanRun(tenant_id=current_user.tenant_id, website_id=website.id, status="pending")
     session.add(scan_run)
@@ -61,6 +95,43 @@ def list_scan_runs(
 ) -> list[ScanRunRead]:
     runs = session.exec(select(ScanRun).where(ScanRun.tenant_id == current_user.tenant_id)).all()
     return [ScanRunRead.model_validate(item) for item in runs]
+
+
+@router.get("/limits")
+def get_scan_limits(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Get current scan limit status for the user."""
+    subscription = session.exec(
+        select(Subscription).where(Subscription.tenant_id == current_user.tenant_id)
+    ).first()
+    
+    if not subscription:
+        subscription = Subscription(tenant_id=current_user.tenant_id, plan="free", status="active")
+        session.add(subscription)
+        session.commit()
+        session.refresh(subscription)
+
+    # Check and reset scan limit if needed
+    now = datetime.utcnow()
+    if subscription.scan_limit_reset_at and now >= subscription.scan_limit_reset_at:
+        subscription.scans_used = 0
+        subscription.scan_limit_reset_at = None
+        session.add(subscription)
+        session.commit()
+
+    plan = subscription.plan or "free"
+    daily_limit = PlanLimits.get_daily_scan_limit(plan)
+    
+    return {
+        "plan": plan,
+        "scans_used": subscription.scans_used,
+        "scans_limit": daily_limit if daily_limit != float('inf') else -1,  # -1 for unlimited
+        "scan_limit_reset_at": subscription.scan_limit_reset_at.isoformat() if subscription.scan_limit_reset_at else None,
+        "can_scan": subscription.scans_used < daily_limit if daily_limit != float('inf') else True,
+        "remaining_scans": max(0, daily_limit - subscription.scans_used) if daily_limit != float('inf') else -1,
+    }
 
 
 @router.delete("/history")

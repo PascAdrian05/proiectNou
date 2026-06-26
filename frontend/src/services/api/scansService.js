@@ -15,6 +15,11 @@ export const scansService = {
     return data;
   },
 
+  async getLimits() {
+    const data = await apiAuthRequest("/scans/limits", { method: "GET" });
+    return data;
+  },
+
   async enqueue(payload) {
     // TODO: Bind your API data here if backend payload fields change.
     const data = await apiAuthRequest("/scans/enqueue", {

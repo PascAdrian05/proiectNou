@@ -29,15 +29,22 @@ export function ScansPage() {
   const [runs, setRuns] = useState([]);
   const [error, setError] = useState("");
   const [isBusy, setIsBusy] = useState(false);
+  const [scanLimits, setScanLimits] = useState(null);
+  const [timeUntilReset, setTimeUntilReset] = useState(null);
   const previousStatusRef = useRef({});
 
   async function loadData(forceRefresh = false) {
     setError("");
     setIsBusy(true);
     try {
-      const [websiteData, runData] = await Promise.all([websitesService.list(), scansService.listRuns(forceRefresh)]);
+      const [websiteData, runData, limitsData] = await Promise.all([
+        websitesService.list(),
+        scansService.listRuns(forceRefresh),
+        scansService.getLimits()
+      ]);
       setWebsites(websiteData);
       setRuns(runData);
+      setScanLimits(limitsData);
       if (!websiteId && websiteData.length > 0) {
         setWebsiteId(websiteData[0].id);
       }
@@ -48,9 +55,39 @@ export function ScansPage() {
     }
   }
 
+  function formatTimeRemaining(seconds) {
+    if (seconds <= 0) return "0h 0m";
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${hours}h ${minutes}m`;
+  }
+
+  useEffect(() => {
+    if (!scanLimits?.scan_limit_reset_at) return;
+
+    const resetTime = new Date(scanLimits.scan_limit_reset_at);
+    const updateTimer = () => {
+      const now = new Date();
+      const diff = Math.max(0, Math.floor((resetTime - now) / 1000));
+      setTimeUntilReset(diff);
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+
+    return () => clearInterval(interval);
+  }, [scanLimits]);
+
   async function enqueueScan() {
     if (!websiteId) {
       setError("Please select a website first.");
+      return;
+    }
+
+    if (scanLimits && !scanLimits.can_scan) {
+      setError(scanLimits.remaining_scans === 0 
+        ? "Daily scan limit reached. Please upgrade your plan or wait for reset." 
+        : "Scan limit reached.");
       return;
     }
 
@@ -58,9 +95,12 @@ export function ScansPage() {
     setIsBusy(true);
     try {
       await scansService.enqueue({ website_id: websiteId });
+      success("Scan enqueued successfully");
       await loadData(true);
     } catch (enqueueError) {
-      setError(enqueueError.message || "Could not enqueue scan");
+      const errorMsg = enqueueError.message || "Could not enqueue scan";
+      setError(errorMsg);
+      showError(errorMsg);
       setIsBusy(false);
     }
   }
@@ -152,6 +192,28 @@ export function ScansPage() {
       <h2>Scans</h2>
       <p className="hint">Enqueue scans and inspect scan run history.</p>
 
+      {scanLimits && (
+        <div className={`scan-limits-banner ${!scanLimits.can_scan ? 'limit-reached' : ''}`}>
+          <div className="scan-limits-info">
+            <span className="scan-limits-text">
+              <strong>Plan:</strong> {scanLimits.plan.toUpperCase()} | 
+              <strong> Scans:</strong> {scanLimits.scans_used}/{scanLimits.scans_limit === -1 ? '∞' : scanLimits.scans_limit}
+              {scanLimits.remaining_scans > 0 && ` (${scanLimits.remaining_scans} remaining)`}
+            </span>
+            {!scanLimits.can_scan && timeUntilReset !== null && (
+              <span className="reset-timer">
+                Resets in: <strong>{formatTimeRemaining(timeUntilReset)}</strong>
+              </span>
+            )}
+          </div>
+          {!scanLimits.can_scan && (
+            <div className="limit-message">
+              ⚠️ Daily scan limit reached. Upgrade your plan for unlimited scans.
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="control-row">
         <select value={websiteId} onChange={(event) => setWebsiteId(event.target.value)} disabled={!isAuthenticated}>
           <option value="">Select website</option>
@@ -161,7 +223,14 @@ export function ScansPage() {
             </option>
           ))}
         </select>
-        <button type="button" onClick={enqueueScan} disabled={isBusy || !isAuthenticated}>Run Scan</button>
+        <button 
+          type="button" 
+          onClick={enqueueScan} 
+          disabled={isBusy || !isAuthenticated || (scanLimits && !scanLimits.can_scan)}
+          className={!scanLimits?.can_scan ? 'disabled-button' : ''}
+        >
+          {scanLimits && !scanLimits.can_scan ? 'Limit Reached' : 'Run Scan'}
+        </button>
         <button type="button" onClick={loadData} disabled={isBusy || !isAuthenticated}>Refresh</button>
       </div>
 

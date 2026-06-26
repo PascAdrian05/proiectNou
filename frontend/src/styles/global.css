@@ -1570,6 +1570,53 @@ select {
   background: color-mix(in srgb, var(--accent) 10%, var(--surface));
 }
 
+/* Scan Limits Banner */
+.scan-limits-banner {
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.scan-limits-banner.limit-reached {
+  border-color: #f59e0b;
+  background: color-mix(in srgb, #fef3c7 20%, var(--surface));
+}
+
+.scan-limits-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.scan-limits-text {
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+
+.reset-timer {
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.limit-message {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: #fef3c7;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: #92400e;
+  font-weight: 500;
+}
+
+.disabled-button {
+  opacity: 0.6;
+  cursor: not-allowed !important;
+}
+
 .ai-posture-score {
   display: flex;
   align-items: center;
