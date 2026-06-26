@@ -4,6 +4,7 @@ from uuid import UUID
 
 from app.api.deps import get_current_user, require_roles
 from app.core.database import get_session
+from app.core.subscription_middleware import check_website_limit
 from app.models.alert import Alert
 from app.models.finding import Finding
 from app.models.scan_run import ScanRun
@@ -21,6 +22,9 @@ def create_website(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_roles("owner", "admin", "analyst")),
 ) -> WebsiteRead:
+    # Check website limit based on subscription plan
+    check_website_limit(session, str(current_user.tenant_id))
+    
     existing = session.exec(
         select(Website).where(Website.tenant_id == current_user.tenant_id, Website.domain == payload.domain)
     ).first()

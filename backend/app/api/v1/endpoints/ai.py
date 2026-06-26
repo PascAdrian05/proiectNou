@@ -4,6 +4,7 @@ from uuid import UUID
 
 from app.api.deps import get_current_user
 from app.core.database import get_session
+from app.core.subscription_middleware import check_plan_feature
 from app.models.finding import Finding
 from app.models.website import Website
 from app.models.user import User
@@ -27,6 +28,9 @@ async def analyze_finding(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
+    # Check if user's plan has access to AI insights
+    check_plan_feature(session, str(current_user.tenant_id), "ai_insights")
+    
     finding = session.get(Finding, finding_id)
     if not finding:
         return {"available": False, "message": "Finding not found"}
@@ -54,6 +58,9 @@ async def get_security_tips(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
+    # Check if user's plan has access to AI insights
+    check_plan_feature(session, str(current_user.tenant_id), "ai_insights")
+    
     websites = session.exec(select(Website)).all()
     findings = session.exec(select(Finding)).all()
 
@@ -76,6 +83,9 @@ async def verify_posture(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
+    # Check if user's plan has access to AI insights
+    check_plan_feature(session, str(current_user.tenant_id), "ai_insights")
+    
     websites = session.exec(select(Website)).all()
     findings = session.exec(select(Finding)).all()
 
@@ -99,6 +109,9 @@ async def get_proactive_insights(
     current_user: User = Depends(get_current_user),
 ):
     """Generate proactive AI insights based on current security posture."""
+    # Check if user's plan has access to AI insights
+    check_plan_feature(session, str(current_user.tenant_id), "ai_insights")
+    
     websites = session.exec(select(Website)).all()
     findings = session.exec(select(Finding).where(Finding.status == "open")).all()
 

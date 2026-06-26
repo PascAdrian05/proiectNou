@@ -1,9 +1,11 @@
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, delete, select
 from uuid import UUID
 
 from app.api.deps import get_current_user
 from app.core.database import get_session
+from app.core.subscription_middleware import check_scan_frequency, get_user_plan
 from app.models.alert import Alert
 from app.models.finding import Finding
 from app.models.scan_run import ScanRun
@@ -27,6 +29,17 @@ def enqueue_scan(
     ).first()
     if not website:
         raise HTTPException(status_code=404, detail="Website not found")
+
+    # Check scan frequency limit based on subscription plan
+    last_scan = session.exec(
+        select(ScanRun)
+        .where(ScanRun.website_id == website.id, ScanRun.status == "completed")
+        .order_by(ScanRun.created_at.desc())
+    ).first()
+    
+    if last_scan and last_scan.created_at:
+        hours_since_last_scan = (datetime.utcnow() - last_scan.created_at).total_seconds() / 3600
+        check_scan_frequency(session, str(current_user.tenant_id), int(hours_since_last_scan))
 
     scan_run = ScanRun(tenant_id=current_user.tenant_id, website_id=website.id, status="pending")
     session.add(scan_run)
