@@ -5,12 +5,9 @@ import { presenceService } from "../services/api/presenceService";
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [auth, setAuth] = useState({}); // Start with empty auth to force login
+  const [auth, setAuth] = useState(storage.getAuthSession());
 
   useEffect(() => {
-    // Clear any existing session on app load to force login
-    storage.clearAuthSession();
-    
     if (!auth.accessToken) {
       return undefined;
     }

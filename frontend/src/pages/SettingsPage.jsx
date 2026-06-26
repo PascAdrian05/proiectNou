@@ -47,12 +47,14 @@ export function SettingsPage() {
         brand_name: data.brand_name || data.name || "",
       });
       
-      // Load 2FA status
+      // Load 2FA status with retry
       try {
         const securityStatus = await authService.getSecurityStatus();
         setTwoFactorEnabled(securityStatus.totp_enabled || false);
+        setSecurityStatus(securityStatus);
       } catch (securityError) {
         console.error("Could not load security status:", securityError);
+        // Don't block settings load if security status fails
       }
     } catch (loadError) {
       setError(loadError.message || "Could not load settings");
