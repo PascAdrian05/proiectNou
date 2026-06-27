@@ -1,0 +1,20 @@
+[33m1f3c4ea[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m modificare
+[33m1e8d9a9[m modificare
+[33m13a6f28[m Senior full-stack overhaul: backend bug fixes + frontend modernization
+[33m9348b05[m initial
+[33me4566fa[m Add passkeys endpoint and backend package lock
+[33m101d4e6[m Add database migration for scan limits columns
+[33m943a5e6[m Fix authentication persistence and 2FA state detection
+[33m85141e7[m Implement daily scan limit system with automatic reset
+[33m9188701[m Force users to login on every site access
+[33m41597ca[m Implement productivity and trust-building features (Phase 1)
+[33m2f5cd95[m Improve UX across all pages
+[33m74e981f[m Add subscription plan limits enforcement
+[33mdda47cc[m Fix 2FA function names in SettingsPage to match authService
+[33maef716f[m Update Pro plan price from €49 to €30
+[33m48704dc[m Add security enhancements: 2FA, audit logs, PDF export, status page, trust badge, AI insights
+[33mbaa4fea[m fix: 2fa QR code generation - switch from pypng to SVG to fix TypeError
+[33m6a29b7d[m fix: 2fa enable verifica token cu secretul din DB, nu cu cel trimis de client
+[33m033896c[m fix: repar endpoint-uri 2FA si SSE events (token query param support)
+[33m301adac[m security: hide sensitive data and add env templates
+[33md533b52[m Add .gitignore to prevent secret leaks

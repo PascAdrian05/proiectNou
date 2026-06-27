@@ -47,19 +47,31 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  min-height: 100vh;
+}
+
+html {
+  background:
+    radial-gradient(circle at 20% 15%, rgba(199, 70, 52, 0.16), transparent 35%),
+    radial-gradient(circle at 75% 80%, rgba(45, 106, 79, 0.18), transparent 32%),
+    linear-gradient(160deg, var(--bg) 0%, var(--bg) 55%, var(--surface-muted) 100%);
+  background-attachment: fixed;
+  transition: background 0.25s ease;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
   color: var(--ink);
   font-family: "Trebuchet MS", "Gill Sans", sans-serif;
-  background:
-    radial-gradient(circle at 20% 15%, rgba(199, 70, 52, 0.16), transparent 35%),
-    radial-gradient(circle at 75% 80%, rgba(45, 106, 79, 0.18), transparent 32%),
-    linear-gradient(160deg, var(--bg) 0%, var(--bg) 55%, var(--surface-muted) 100%);
-  transition: background 0.25s ease, color 0.25s ease;
+  background: transparent;
+  transition: color 0.25s ease;
 }
 
-[data-theme="dark"] body {
+[data-theme="dark"] html {
   background:
     radial-gradient(circle at 20% 15%, rgba(240, 113, 89, 0.12), transparent 35%),
     radial-gradient(circle at 75% 80%, rgba(61, 153, 112, 0.1), transparent 32%),
@@ -98,6 +110,19 @@ article:hover, .scan-run-card:hover, .chart-container:hover {
 .app-shell {
   width: min(1100px, 92vw);
   margin: 2rem auto;
+  min-height: calc(100vh - 4rem);
+  position: relative;
+}
+
+/* Safety net: ensure the gradient backdrop remains visible behind any
+ * layout regardless of route, including the brief moment when the page
+ * transition animation hides the main content. */
+.app-shell-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: transparent;
 }
 
 .topbar-actions {
@@ -2807,6 +2832,7 @@ article:hover {
   align-items: center;
   justify-content: center;
   padding: 2rem;
+  background: transparent;
 }
 .auth-standalone .page-card {
   width: 100%;

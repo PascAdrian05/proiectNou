@@ -20,12 +20,29 @@ function parseDate(value) {
 }
 
 export function buildWebsiteInsights(websites, findings, scans) {
-  const scanMap = new Map(scans.map((scan) => [String(scan.website_id), scan]));
+  const safeWebsites = Array.isArray(websites) ? websites : [];
+  const safeFindings = Array.isArray(findings) ? findings : [];
+  const safeScans = Array.isArray(scans) ? scans : [];
 
-  return websites.map((website) => {
+  const scanMap = new Map(
+    safeScans
+      .filter((scan) => scan && typeof scan === 'object' && typeof scan.website_id !== 'undefined')
+      .map((scan) => [String(scan.website_id), scan])
+  );
+
+  return safeWebsites.map((website) => {
     const websiteId = String(website.id);
-    const relatedFindings = findings.filter((finding) => String(finding.website_id) === websiteId);
-    const penalty = relatedFindings.reduce((total, finding) => total + getSeverityWeight(finding.severity), 0);
+    const relatedFindings = safeFindings.filter(
+      (finding) =>
+        finding &&
+        typeof finding === 'object' &&
+        typeof finding.website_id !== 'undefined' &&
+        String(finding.website_id) === websiteId
+    );
+    const penalty = relatedFindings.reduce(
+      (total, finding) => total + getSeverityWeight(finding.severity),
+      0
+    );
     const score = Math.max(0, Math.min(100, 100 - penalty));
     const scan = scanMap.get(websiteId) || null;
 
@@ -33,14 +50,20 @@ export function buildWebsiteInsights(websites, findings, scans) {
       website,
       findings: relatedFindings,
       score,
-      healthLabel: score >= 85 ? "Healthy" : score >= 65 ? "Needs attention" : "At risk",
+      healthLabel:
+        score >= 85
+          ? "Healthy"
+          : score >= 65
+          ? "Needs attention"
+          : "At risk",
       lastScanStatus: scan?.status || website.status || "unknown",
     };
   });
 }
 
 export function getTopIssues(findings, limit = 5) {
-  return [...findings]
+  const safeFindings = Array.isArray(findings) ? findings : [];
+  return [...safeFindings]
     .sort((left, right) => getSeverityWeight(right.severity) - getSeverityWeight(left.severity))
     .slice(0, limit)
     .map((finding) => enrichFinding(finding));
@@ -48,6 +71,7 @@ export function getTopIssues(findings, limit = 5) {
 
 export function buildSevenDayTrend(findings) {
   const today = new Date();
+  const safeFindings = Array.isArray(findings) ? findings : [];
   const days = Array.from({ length: 7 }, (_, index) => {
     const day = new Date(today);
     day.setHours(0, 0, 0, 0);
@@ -60,7 +84,7 @@ export function buildSevenDayTrend(findings) {
   });
 
   const indexMap = new Map(days.map((day) => [day.key, day]));
-  findings.forEach((finding) => {
+  safeFindings.forEach((finding) => {
     const date = parseDate(finding.last_seen_at) || parseDate(finding.first_seen_at);
     if (!date) {
       return;
@@ -82,10 +106,13 @@ export function buildSevenDayTrend(findings) {
 }
 
 export function buildAlertFeed(alerts, findings, websites, limit = 5) {
-  const findingMap = new Map(findings.map((finding) => [String(finding.id), finding]));
-  const websiteMap = new Map(websites.map((website) => [String(website.id), website]));
+  const safeFindings = Array.isArray(findings) ? findings : [];
+  const safeWebsites = Array.isArray(websites) ? websites : [];
+  const findingMap = new Map(safeFindings.map((finding) => [String(finding.id), finding]));
+  const websiteMap = new Map(safeWebsites.map((website) => [String(website.id), website]));
+  const safeAlerts = Array.isArray(alerts) ? alerts : [];
 
-  return [...alerts]
+  return [...safeAlerts]
     .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
     .slice(0, limit)
     .map((alert) => {

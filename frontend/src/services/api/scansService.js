@@ -11,8 +11,10 @@ export const scansService = {
     }
 
     const data = await apiAuthRequest("/scans/runs", { method: "GET" });
-    setCachedValue(SCAN_RUNS_CACHE_KEY, data, 12000);
-    return data;
+    // API returns paginated: { items: [...], next_cursor: "..." }
+    const items = Array.isArray(data) ? data : (data?.items || []);
+    setCachedValue(SCAN_RUNS_CACHE_KEY, items, 12000);
+    return items;
   },
 
   async getLimits() {

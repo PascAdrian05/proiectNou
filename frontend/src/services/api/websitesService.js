@@ -11,8 +11,10 @@ export const websitesService = {
     }
 
     const data = await apiAuthRequest("/websites", { method: "GET" });
-    setCachedValue(WEBSITES_CACHE_KEY, data, 20000);
-    return data;
+    // API returns paginated: { items: [...], next_cursor: "..." }
+    const items = Array.isArray(data) ? data : (data?.items || []);
+    setCachedValue(WEBSITES_CACHE_KEY, items, 20000);
+    return items;
   },
 
   async create(payload) {

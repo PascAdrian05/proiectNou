@@ -12,13 +12,9 @@ import {
   Sun,
   Moon,
   LogOut,
+  Menu,
+  X,
 } from "lucide-react";
-import { BehaviorTracker } from "../components/BehaviorTracker";
-import { LiveUsersBadge } from "../components/LiveUsersBadge";
-import { TrustBadge } from "../components/TrustBadge";
-import SecurityBadge from "../components/SecurityBadge";
-import StepUpModal from "../components/StepUpModal";
-import AIAssistant from "../components/AIAssistant";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { authService } from "../services/api/authService";
@@ -40,7 +36,7 @@ export function AppLayout() {
   const navigate = useNavigate();
   const { isAuthenticated, auth, clearSession } = useAuth();
   const { isDark, toggleTheme } = useTheme();
-  const [showAccount, setShowAccount] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   async function onLogout() {
@@ -56,96 +52,103 @@ export function AppLayout() {
 
   return (
     <div className="app-shell">
+      {/* Top Bar */}
       <header className="topbar">
         <div className="topbar-brand">
           <h1>{appConfig.appName}</h1>
-          {isAuthenticated && (
-            <span className={`plan-badge plan-${auth.role === "owner" || auth.role === "admin" ? "pro" : "free"}`}>
-              {auth.role === "owner" || auth.role === "admin" ? "PRO" : "Free"}
-            </span>
-          )}
         </div>
-        <nav className="topnav">
-          {isAuthenticated && protectedLinks.map((link) => {
-            const Icon = link.Icon;
-            const isActive = location.pathname === link.to;
-            return (
-              <Link
-                key={link.to}
-                className={isActive ? "active" : ""}
-                to={link.to}
-                aria-current={isActive ? "page" : undefined}
-              >
-                {Icon && <Icon size={16} strokeWidth={2} aria-hidden="true" />}
-                <span>{link.label}</span>
-              </Link>
-            );
-          })}
+
+        {/* Desktop nav */}
+        <nav className="topnav topnav-desktop">
+          {isAuthenticated &&
+            protectedLinks.map((link) => {
+              const Icon = link.Icon;
+              const isActive = location.pathname === link.to;
+              return (
+                <Link
+                  key={link.to}
+                  to={link.to}
+                  className={isActive ? "nav-link active" : "nav-link"}
+                  aria-current={isActive ? "page" : undefined}
+                >
+                  {Icon && <Icon size={16} strokeWidth={2} aria-hidden="true" />}
+                  <span>{link.label}</span>
+                </Link>
+              );
+            })}
         </nav>
+
         <div className="topbar-actions">
-          <button type="button" className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
-            {isDark ? <><Sun size={14} aria-hidden="true" /> Light</> : <><Moon size={14} aria-hidden="true" /> Dark</>}
+          <button type="button" className="icon-btn" onClick={toggleTheme} aria-label="Toggle theme">
+            {isDark ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
           </button>
+
           {isAuthenticated && (
             <>
-              <button type="button" className="account-btn" onClick={() => setShowAccount((v) => !v)} title="Account details" aria-label="Account details">
-                <span className="account-avatar">{(auth.email || auth.role || "U")[0].toUpperCase()}</span>
-              </button>
-              <button type="button" className="ghost-button" onClick={() => setShowLogoutConfirm(true)}>
-                <LogOut size={14} aria-hidden="true" /> Logout
+              <div className="user-badge">
+                <span className="user-avatar">{(auth.email || auth.role || "U")[0].toUpperCase()}</span>
+                <span className="user-email">{auth.email || ""}</span>
+                <span className={`plan-tag plan-${auth.role === "owner" || auth.role === "admin" ? "pro" : "free"}`}>
+                  {auth.role === "owner" || auth.role === "admin" ? "PRO" : "Free"}
+                </span>
+              </div>
+              <button type="button" className="icon-btn" onClick={() => setShowLogoutConfirm(true)} title="Logout">
+                <LogOut size={16} aria-hidden="true" />
               </button>
             </>
           )}
+
+          {/* Mobile menu toggle */}
+          {isAuthenticated && (
+            <button
+              type="button"
+              className="icon-btn mobile-nav-toggle"
+              onClick={() => setMobileNavOpen((v) => !v)}
+              aria-label="Toggle navigation"
+            >
+              {mobileNavOpen ? <X size={18} /> : <Menu size={18} />}
+            </button>
+          )}
         </div>
       </header>
-      {isAuthenticated && <BehaviorTracker />}
-      {isAuthenticated && <LiveUsersBadge />}
-      {isAuthenticated && <TrustBadge />}
-      {isAuthenticated && <SecurityBadge />}
-      {isAuthenticated && <AIAssistant />}
 
+      {/* Mobile Navigation Drawer */}
+      {isAuthenticated && mobileNavOpen && (
+        <div className="mobile-overlay" onClick={() => setMobileNavOpen(false)}>
+          <nav className="mobile-nav" onClick={(e) => e.stopPropagation()}>
+            {protectedLinks.map((link) => {
+              const Icon = link.Icon;
+              const isActive = location.pathname === link.to;
+              return (
+                <Link
+                  key={link.to}
+                  to={link.to}
+                  className={`mobile-nav-link ${isActive ? "active" : ""}`}
+                  onClick={() => setMobileNavOpen(false)}
+                >
+                  {Icon && <Icon size={18} strokeWidth={2} aria-hidden="true" />}
+                  <span>{link.label}</span>
+                </Link>
+              );
+            })}
+          </nav>
+        </div>
+      )}
+
+      {/* Main Content */}
       <main className="content-wrap" key={location.pathname}>
         <Outlet />
       </main>
 
-      {showAccount && (
-        <div className="overlay-panel" onClick={() => setShowAccount(false)}>
-          <div className="account-panel" onClick={(e) => e.stopPropagation()}>
-            <h3>Account</h3>
-            <div className="account-details">
-              <div className="account-field">
-                <span className="account-label">Email</span>
-                <span className="account-value">{auth.email || auth.tenantId || "—"}</span>
-              </div>
-              <div className="account-field">
-                <span className="account-label">Role</span>
-                <span className="account-value account-role">{(auth.role || "user").toUpperCase()}</span>
-              </div>
-              <div className="account-field">
-                <span className="account-label">Plan</span>
-                <span className={`account-value plan-badge plan-${auth.role === "owner" || auth.role === "admin" ? "pro" : "free"}-lg`}>
-                  {auth.role === "owner" || auth.role === "admin" ? "PRO" : "Free"}
-                </span>
-              </div>
-              <div className="account-field">
-                <span className="account-label">Tenant</span>
-                <span className="account-value account-mono">{auth.tenantId ? auth.tenantId.slice(0, 12) + "…" : "—"}</span>
-              </div>
-            </div>
-            <button type="button" className="ghost-button" onClick={() => { setShowAccount(false); navigate(appConfig.routes.billing); }}>
-              Manage billing
-            </button>
-          </div>
-        </div>
-      )}
-
+      {/* Logout Confirm Modal */}
       {showLogoutConfirm && (
-        <div className="overlay-panel" onClick={() => setShowLogoutConfirm(false)}>
-          <div className="confirm-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-overlay" onClick={() => setShowLogoutConfirm(false)}>
+          <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+            <h3>Confirm logout</h3>
             <p>Are you sure you want to logout?</p>
-            <div className="confirm-actions">
-              <button type="button" onClick={onLogout}>Logout</button>
-              <button type="button" className="ghost-button" onClick={() => setShowLogoutConfirm(false)}>Cancel</button>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-primary" onClick={onLogout}>Logout</button>
+              <button type="button" className="btn btn-ghost" onClick={() => setShowLogoutConfirm(false)}>Cancel</button>
             </div>
           </div>
         </div>

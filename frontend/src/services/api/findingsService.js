@@ -11,8 +11,10 @@ export const findingsService = {
     }
 
     const data = await apiAuthRequest("/findings", { method: "GET" });
-    setCachedValue(FINDINGS_CACHE_KEY, data, 15000);
-    return data;
+    // API returns paginated: { items: [...], next_cursor: "..." }
+    const items = Array.isArray(data) ? data : (data?.items || []);
+    setCachedValue(FINDINGS_CACHE_KEY, items, 15000);
+    return items;
   },
 
   async remove(findingId) {
@@ -27,3 +29,4 @@ export const findingsService = {
     return data;
   },
 };
+

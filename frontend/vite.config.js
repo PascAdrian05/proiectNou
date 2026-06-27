@@ -7,11 +7,20 @@ export default defineConfig({
     chunkSizeWarningLimit: 500,
     rollupOptions: {
       output: {
-        manualChunks: {
-          react: ["react", "react-dom"],
-          router: ["react-router-dom"],
-          charts: ["recharts"],
-          vendor: ["framer-motion", "jspdf", "jspdf-autotable", "html2canvas"],
+        manualChunks(id) {
+          if (id.includes("node_modules")) {
+            if (id.includes("react-dom") || id.includes("/react/")) return "react";
+            if (id.includes("react-router")) return "router";
+            if (id.includes("recharts")) return "charts";
+            if (
+              id.includes("framer-motion") ||
+              id.includes("jspdf") ||
+              id.includes("html2canvas")
+            ) {
+              return "vendor";
+            }
+          }
+          return undefined;
         },
       },
     },

@@ -7,26 +7,35 @@ import { ThemeProvider } from "./context/ThemeContext";
 import { ToastProvider } from "./context/ToastContext";
 import { Toaster } from "react-hot-toast";
 import { ToastContainer } from "./components/ToastContainer";
-import { useRegisterSW } from "./hooks/useRegisterSW";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./styles/global.css";
 
 function PWAProvider({ children }) {
-  useRegisterSW();
-  return children;
+  React.useEffect(() => {
+    let cancelled = false;
+    import("./hooks/useRegisterSW").then((mod) => {
+      if (!cancelled) mod.useRegisterSW();
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  return <>{children}</>;
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(
-  <PWAProvider>
-    <BrowserRouter>
-      <ThemeProvider>
-        <ToastProvider>
-          <AuthProvider>
-            <AppRouter />
-            <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
-            <ToastContainer />
-          </AuthProvider>
-        </ToastProvider>
-      </ThemeProvider>
-    </BrowserRouter>
-  </PWAProvider>
+  <ErrorBoundary>
+    <PWAProvider>
+      <BrowserRouter>
+        <ThemeProvider>
+          <ToastProvider>
+            <AuthProvider>
+              <AppRouter />
+              <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
+              <ToastContainer />
+            </AuthProvider>
+          </ToastProvider>
+        </ThemeProvider>
+      </BrowserRouter>
+    </PWAProvider>
+  </ErrorBoundary>
 );

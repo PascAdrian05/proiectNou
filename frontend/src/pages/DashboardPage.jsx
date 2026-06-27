@@ -154,8 +154,9 @@ export function DashboardPage() {
     ? Math.round(websiteInsights.reduce((total, item) => total + item.score, 0) / websiteInsights.length)
     : 100;
 
-  const criticalCount = findings.filter((f) => String(f.severity).toLowerCase() === "critical").length;
-  const openFindings = findings.filter((f) => (f.status || "open") === "open").length;
+  const safeFindings = Array.isArray(findings) ? findings : [];
+  const criticalCount = safeFindings.filter((f) => String(f.severity).toLowerCase() === "critical").length;
+  const openFindings = safeFindings.filter((f) => (f.status || "open") === "open").length;
 
   function onExportCsv() {
     exportReportCsv({ insights: websiteInsights, topIssues, alerts: alertFeed });

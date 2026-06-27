@@ -37,9 +37,10 @@ export async function apiRequest(path, options = {}) {
   });
 
   const payload = await parseResponse(response);
+  const url = `${appConfig.apiBaseUrl}${path}`;
 
   if (!response.ok) {
-    throw new Error(errorFromPayload(payload, "Request failed"));
+    throw new Error(errorFromPayload(payload, `Request failed (${response.status}) on ${url}`));
   }
 
   return payload;
@@ -50,17 +51,43 @@ export async function apiRequest(path, options = {}) {
 // revocations).
 let refreshInFlight = null;
 
+function shouldClearSessionOnRefreshFailure(path) {
+  // Only wipe the session on refresh failure when the original request
+  // actually requires auth. Public endpoints (login, refresh itself,
+  // register, password reset, oauth) must never log the user out — that
+  // causes the "page flashes and disappears" symptom when the backend
+  // is unreachable or returns an unrelated 401.
+  if (!path) return true;
+  const publicPrefixes = [
+    "/auth/login",
+    "/auth/register",
+    "/auth/refresh",
+    "/auth/forgot",
+    "/auth/reset",
+    "/auth/verify",
+    "/oauth/",
+  ];
+  return !publicPrefixes.some((prefix) => path.startsWith(prefix));
+}
+
 async function performRefresh() {
   const { refreshToken } = storage.getAuthSession();
   if (!refreshToken) {
     throw new Error("No refresh token");
   }
 
-  const response = await fetch(`${appConfig.apiBaseUrl}/auth/refresh`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refresh_token: refreshToken }),
-  });
+  let response;
+  try {
+    response = await fetch(`${appConfig.apiBaseUrl}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+  } catch (networkError) {
+    // Network failure — don't wipe the session, the backend may be
+    // transiently unavailable. Surface a clear error instead.
+    throw new Error("Backend unreachable. Try again in a moment.");
+  }
 
   if (!response.ok) {
     throw new Error("Session refresh failed");
@@ -101,10 +128,17 @@ export async function apiAuthRequest(path, options = {}) {
     headers["X-Step-Up-Token"] = session.stepUpToken;
   }
 
-  let response = await fetch(`${appConfig.apiBaseUrl}${path}`, {
-    ...options,
-    headers,
-  });
+  let response;
+  try {
+    response = await fetch(`${appConfig.apiBaseUrl}${path}`, {
+      ...options,
+      headers,
+    });
+  } catch (networkError) {
+    // Network failure — don't clear the session, let the UI render an
+    // error message instead of bouncing the user back to /login.
+    throw new Error("Backend unreachable. Check that the API is running.");
+  }
 
   // Step-up required — surface a typed error so the UI can prompt for 2FA.
   if (response.status === 401 && response.headers.get("X-Step-Up-Required") === "true") {
@@ -130,9 +164,14 @@ export async function apiAuthRequest(path, options = {}) {
         ...options,
         headers: retryHeaders,
       });
-    } catch {
-      storage.clearAuthSession();
-      throw new Error("Session expired. Please login again.");
+    } catch (refreshError) {
+      // Only wipe the session when this was a genuine auth failure on a
+      // protected endpoint. Public endpoints and network failures must
+      // preserve the session so the user isn't kicked out unexpectedly.
+      if (shouldClearSessionOnRefreshFailure(path)) {
+        storage.clearAuthSession();
+      }
+      throw new Error(refreshError.message || "Session expired. Please login again.");
     }
   }
 

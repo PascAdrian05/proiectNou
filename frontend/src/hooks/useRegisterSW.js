@@ -1,10 +1,16 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 export function useRegisterSW() {
+  const registeredRef = useRef(false);
+
   useEffect(() => {
+    // Prevent double-registration in dev StrictMode
+    if (registeredRef.current) return;
+
     if (!("serviceWorker" in navigator)) return;
 
     let cancelled = false;
+    registeredRef.current = true;
 
     async function register() {
       try {
@@ -21,7 +27,7 @@ export function useRegisterSW() {
           });
         });
       } catch {
-        console.warn("[SW] Registration failed (expected in dev)");
+        // Silently ignore — SW registration is best-effort
       }
     }
 
@@ -29,3 +35,4 @@ export function useRegisterSW() {
     return () => { cancelled = true; };
   }, []);
 }
+
