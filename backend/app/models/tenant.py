@@ -1,7 +1,13 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC default — keeps ``created_at`` comparable to
+    other tz-aware columns (alerts, scans, events) without surprises."""
+    return datetime.now(timezone.utc)
 
 
 class Tenant(SQLModel, table=True):
@@ -15,4 +21,4 @@ class Tenant(SQLModel, table=True):
     report_base_url: str | None = None
     report_cta_text: str | None = None
     report_cta_url: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)

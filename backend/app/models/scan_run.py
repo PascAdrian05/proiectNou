@@ -1,7 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, Index, SQLModel
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class ScanRun(SQLModel, table=True):
@@ -16,4 +20,11 @@ class ScanRun(SQLModel, table=True):
     completed_at: datetime | None = None
     error_message: str | None = None
     result_json: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+    __table_args__ = (
+        # "Recent scans for tenant" (SSE snapshot + dashboard).
+        Index("ix_scanrun_tenant_created_at", "tenant_id", "created_at"),
+        # "Per-website scan history".
+        Index("ix_scanrun_tenant_website_created", "tenant_id", "website_id", "created_at"),
+    )

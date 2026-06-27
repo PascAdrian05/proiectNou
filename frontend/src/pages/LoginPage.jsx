@@ -8,6 +8,13 @@ import { providerIcons } from "./OAuthIcons";
 
 const CODE_LENGTH = 6;
 
+// Backend route is /api/v1/oauth (not /api/v1/auth/oauth). Hitting the old
+// path returns 404 from the working OAuth provider.
+const OAUTH_BASE_PATH = "/api/v1/oauth";
+
+// Providers currently configured on the backend (see backend/app/api/v1/router.py).
+const ENABLED_OAUTH_PROVIDERS = ["google", "github", "linkedin"];
+
 function LoginPage() {
   const { isAuthenticated, saveSession } = useAuth();
   const [email, setEmail] = useState("");
@@ -18,7 +25,11 @@ function LoginPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
-  const [pendingToken, setPendingToken] = useState(null);
+  // When the user submits credentials and the account has 2FA enabled,
+  // we transition to the 2FA screen. The 2FA submit does NOT need to
+  // re-send the password — the temporary token from step 1 already
+  // authenticated the user.
+  const [requires2FA, setRequires2FA] = useState(false);
   const [code, setCode] = useState(Array(CODE_LENGTH).fill(""));
   const [focusedIdx, setFocusedIdx] = useState(0);
   const inputRefs = useRef([]);
@@ -41,7 +52,9 @@ function LoginPage() {
       const response = await authService.login(email, password);
 
       if (response.requires_2fa) {
-        setPendingToken(response.access_token);
+        // Move into the 2FA view; do not store the temp token anywhere
+        // — it's only useful paired with the password the user just typed.
+        setRequires2FA(true);
         setFocusedIdx(0);
         setTimeout(() => inputRefs.current[0]?.focus(), 100);
       } else {
@@ -143,15 +156,12 @@ function LoginPage() {
 
   function handleOAuth(provider) {
     setLoginError("");
-    const clientId = {
-      google: "google-client-id-placeholder",
-      github: "github-client-id-placeholder",
-      linkedin: "linkedin-client-id-placeholder",
-    }[provider];
-    window.location.href = `/api/v1/auth/oauth/${provider}?client_id=${clientId}`;
+    // Hit the configured backend route — the previous path
+    // `/api/v1/auth/oauth/...` did not exist and returned 404.
+    window.location.href = `${OAUTH_BASE_PATH}/${provider}/start`;
   }
 
-  if (pendingToken) {
+  if (requires2FA) {
     return (
       <div className="auth-shell">
         <div className="auth-card">
@@ -186,7 +196,7 @@ function LoginPage() {
           <button
             type="button"
             className="ghost-button"
-            onClick={() => { setPendingToken(null); setCode(Array(CODE_LENGTH).fill("")); setLoginError(""); }}
+            onClick={() => { setRequires2FA(false); setCode(Array(CODE_LENGTH).fill("")); setLoginError(""); }}
             style={{ marginTop: "0.8rem" }}
           >
             Inapoi la login
@@ -262,7 +272,7 @@ function LoginPage() {
         </div>
 
         <div className="oauth-list">
-          {["google", "github", "linkedin"].map((provider) => {
+          {ENABLED_OAUTH_PROVIDERS.map((provider) => {
             const Icon = providerIcons?.[provider];
             return (
               <button

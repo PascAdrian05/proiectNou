@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, delete, select
 from uuid import UUID
 
@@ -94,14 +95,41 @@ def enqueue_scan(
 def list_scan_runs(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=200),
+    cursor: Optional[str] = Query(None),
+    website_id: Optional[UUID] = Query(None),
 ) -> list[ScanRunRead]:
+    """List recent scan runs for the current tenant.
+
+    Keyset pagination keeps the response bounded regardless of how much
+    history the tenant has accumulated. The default 50 is enough for the
+    ScansPage UI without forcing the client to aggregate.
+    """
     tenant_id = str(current_user.tenant_id)
-    cached = cache_get(f"scanruns:{tenant_id}")
+    cache_key = f"scanruns:{tenant_id}:{limit}:{cursor or ''}:{website_id or ''}"
+    cached = cache_get(cache_key)
     if cached is not None:
         return [ScanRunRead(**item) for item in cached]
-    runs = session.exec(select(ScanRun).where(ScanRun.tenant_id == current_user.tenant_id)).all()
-    result = [ScanRunRead.model_validate(item) for item in runs]
-    cache_set(f"scanruns:{tenant_id}", [r.model_dump() for r in result], ttl=300)
+
+    query = select(ScanRun).where(ScanRun.tenant_id == current_user.tenant_id)
+    if website_id:
+        query = query.where(ScanRun.website_id == website_id)
+    if cursor:
+        cursor_ts, _, cursor_id = cursor.partition("|")
+        try:
+            cursor_dt = datetime.fromisoformat(cursor_ts)
+            cursor_uuid = UUID(cursor_id)
+            query = query.where(
+                (ScanRun.created_at < cursor_dt)
+                | ((ScanRun.created_at == cursor_dt) & (ScanRun.id < cursor_uuid))
+            )
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid cursor")
+
+    query = query.order_by(ScanRun.created_at.desc(), ScanRun.id.desc()).limit(limit)
+    runs = session.exec(query).all()
+    result = [ScanRunRead.model_validate(run) for run in runs]
+    cache_set(cache_key, [r.model_dump() for r in result], ttl=300)
     return result
 
 

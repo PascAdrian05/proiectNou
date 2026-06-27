@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select
 from uuid import UUID
@@ -43,12 +45,15 @@ def create_conversation(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
+    now = datetime.now(timezone.utc)
     conversation = AIConversation(
         user_id=current_user.id,
         tenant_id=current_user.tenant_id,
         conversation_type=payload.conversation_type,
         messages=payload.messages,
         context_data=payload.context_data,
+        created_at=now,
+        updated_at=now,
     )
     session.add(conversation)
     session.commit()
@@ -69,7 +74,8 @@ def update_conversation(
 
     conversation.messages = payload.messages
     conversation.context_data = payload.context_data
-    conversation.updated_at = conversation.updated_at
+    # Always bump updated_at on real updates so list ordering stays accurate.
+    conversation.updated_at = datetime.now(timezone.utc)
     session.add(conversation)
     session.commit()
     session.refresh(conversation)

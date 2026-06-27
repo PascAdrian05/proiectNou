@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
@@ -14,7 +14,9 @@ def check_scheduled_scans() -> dict[str, int]:
     from app.tasks.scan_tasks import run_full_scan
 
     enqueued = 0
-    now = datetime.utcnow()
+    # Use timezone-aware UTC. ``datetime.utcnow()`` returns a naive value
+    # which produces inconsistent comparisons against tz-aware columns.
+    now = datetime.now(timezone.utc)
 
     with Session(engine) as session:
         websites = session.exec(select(Website)).all()

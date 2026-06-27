@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "PowerShell(cd 'C:\\\\Users\\\\adria\\\\Desktop\\\\proiectNou\\\\backend'; $env:PYTHONPATH='.'; python -c \"from app.services.ai_service import ai_service; print\\('ai_service OK', ai_service.is_available\\(\\)\\)\")",
+      "PowerShell(cd 'C:\\\\Users\\\\adria\\\\Desktop\\\\proiectNou\\\\backend'; $env:PYTHONPATH='.'; python -m py_compile app/services/ai_service.py app/tasks/scan_tasks.py app/api/v1/endpoints/auth.py app/api/v1/endpoints/events.py app/api/v1/endpoints/findings.py app/api/v1/endpoints/alerts.py app/api/v1/endpoints/scan_run.py 2>&1; echo 'compiled')",
+      "PowerShell(cd 'C:\\\\Users\\\\adria\\\\Desktop\\\\proiectNou\\\\backend'; $env:PYTHONPATH='.'; python -m py_compile app/services/ai_service.py app/tasks/scan_tasks.py app/api/v1/endpoints/auth.py app/api/v1/endpoints/events.py app/api/v1/endpoints/findings.py app/api/v1/endpoints/alerts.py app/api/v1/endpoints/scans.py app/api/v1/endpoints/reports.py app/api/v1/endpoints/oauth.py app/api/v1/endpoints/ai_conversations.py app/models/finding.py app/models/alert.py app/models/scan_run.py app/models/audit_log.py app/models/tenant.py app/models/website.py app/models/credential.py app/models/stripe_event.py app/models/ai_conversation.py app/models/subscription.py app/models/oauth_account.py app/core/cache.py app/tasks/scheduled_tasks.py 2>&1; echo 'compiled')"
     ]
   }
 }

@@ -1,7 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Website(SQLModel, table=True):
@@ -13,4 +17,4 @@ class Website(SQLModel, table=True):
     ownership_verified: bool = False
     scan_frequency_minutes: int = 60
     last_scan_at: datetime | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)

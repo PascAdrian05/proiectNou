@@ -1,7 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class StripeEvent(SQLModel, table=True):
@@ -11,5 +15,5 @@ class StripeEvent(SQLModel, table=True):
     processed: bool = Field(default=False, index=True)
     payload_json: str | None = None
     error_message: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
     processed_at: datetime | None = None

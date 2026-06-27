@@ -146,8 +146,13 @@ export function SettingsPage() {
 
   async function onDisable2FA() {
     setError("");
+    if (!twoFactorPassword) {
+      setError("Password is required to disable 2FA.");
+      toast.error("Password is required to disable 2FA.");
+      return;
+    }
     try {
-      await authService.disable2fa(""); // No password required
+      await authService.disable2fa(twoFactorPassword);
       setTwoFactorEnabled(false);
       setTwoFactorPassword("");
       toast.success("2FA disabled successfully!");

@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
@@ -51,7 +53,7 @@ def _build_report_payload(session: Session, tenant_id: str, user_id: str) -> dic
     behavior = compute_behavior_score(str(tenant_id), str(user_id))
 
     return {
-        "generated_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "tenant_id": str(tenant_id),
         "branding": {
             "tenant_name": tenant.name if tenant else "Tenant",

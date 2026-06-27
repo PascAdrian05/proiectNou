@@ -9,6 +9,7 @@ from app.api.deps import get_current_user
 from app.core.database import get_session
 from app.core.security_controls import clear_failed_login, enforce_rate_limit, is_login_locked, register_failed_login
 from app.core.security import create_access_token, create_refresh_token, create_step_up_token, decode_token, get_password_hash, verify_password
+from app.core.step_up import require_step_up
 from app.core.token_store import is_token_revoked, mark_user_offline, mark_user_online, revoke_token_jti
 from app.core.totp import generate_setup_data, verify_totp
 from app.core.backup_codes import generate_backup_codes, remove_used_code, verify_backup_code
@@ -368,11 +369,13 @@ def disable_2fa(
     request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_step_up),
 ) -> dict[str, str]:
     """Disable 2FA.
 
-    The user must confirm with their password. Disabling 2FA is a sensitive
-    action — the previous implementation accepted an empty password.
+    Requires step-up authentication (recent TOTP verification) plus a
+    password confirmation. Both checks must succeed — the password is
+    defended in depth in case the user's session cookie was hijacked.
     """
     user = current_user
 
@@ -510,8 +513,13 @@ def generate_backup_codes_endpoint(
     request: Request,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
+    _: None = Depends(require_step_up),
 ) -> BackupCodesResponse:
-    """Generate new backup codes. Invalidates any existing ones."""
+    """Generate new backup codes. Invalidates any existing ones.
+
+    Requires step-up auth — replacing backup codes silently could let an
+    attacker who briefly hijacks a session lock the real user out.
+    """
     user = current_user
 
     if not user.totp_enabled:

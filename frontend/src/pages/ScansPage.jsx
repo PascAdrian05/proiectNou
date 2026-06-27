@@ -1,13 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { toast } from "react-hot-toast";
 import { Plus, Globe, Activity, Clock, Shield, Search, X, AlertTriangle } from "lucide-react";
-import { useAuth } from "../context/AuthContext";
 import { scansService } from "../services/api/scansService";
 import { websitesService } from "../services/api/websitesService";
+import { subscribeToScanEvents } from "../services/api/eventStream";
 import { formatDistanceToNow } from "../lib/utils";
 
 export function ScansPage() {
-  const { auth } = useAuth();
   const [websites, setWebsites] = useState([]);
   const [scans, setScans] = useState([]);
   const [websiteId, setWebsiteId] = useState("");
@@ -17,7 +16,6 @@ export function ScansPage() {
   const [showAddWebsite, setShowAddWebsite] = useState(false);
   const [addUrl, setAddUrl] = useState("");
   const [addingWebsite, setAddingWebsite] = useState(false);
-  const pollRef = useRef(null);
 
   // Load websites once
   useEffect(() => {
@@ -49,6 +47,34 @@ export function ScansPage() {
     loadScans();
   }, [loadScans]);
 
+  // Live updates: instead of polling every 3s, subscribe to the SSE stream
+  // for the scans namespace. We update local state when events arrive and
+  // refresh from the API on completion to capture the final persisted state.
+  useEffect(() => {
+    const unsubscribe = subscribeToScanEvents({
+      onProgress: (payload) => {
+        // The backend emits step-level progress. Merge into scanningProgress
+        // (a percentage) so the UI bar advances smoothly.
+        if (payload.progress && typeof payload.progress.steps_completed === "number") {
+          const total = payload.progress.total_steps || 4;
+          const done = payload.progress.steps_completed || 0;
+          setScanningProgress((done / total) * 100);
+        }
+      },
+      onCompleted: () => {
+        // Server pushed a terminal state — refresh the list and stop the
+        // progress animation.
+        loadScans();
+        setScanning(false);
+        setScanningProgress(null);
+      },
+      onError: () => {
+        // SSE failure shouldn't break the page; the user can refresh.
+      },
+    });
+    return unsubscribe;
+  }, [loadScans]);
+
   async function handleAddWebsite(e) {
     e.preventDefault();
     if (!addUrl.trim()) return;
@@ -74,47 +100,16 @@ export function ScansPage() {
   async function handleStartScan() {
     if (!websiteId) return;
     setScanning(true);
-    setScanningProgress(null);
+    setScanningProgress(0);
     try {
       await scansService.enqueue({ website_id: websiteId });
       toast.success("Scanare pornita!");
       loadScans();
-      startPolling();
     } catch (err) {
       setScanning(false);
       toast.error(err.message || "Eroare la pornirea scanarii.");
     }
   }
-
-  function startPolling() {
-    stopPolling();
-    pollRef.current = window.setInterval(async () => {
-      try {
-        const data = await scansService.listRuns(true);
-        setScans(data || []);
-        const running = data?.some((s) => s.status === "running" || s.status === "pending");
-        if (!running) {
-          stopPolling();
-          setScanning(false);
-          setScanningProgress(null);
-        }
-      } catch {
-        stopPolling();
-        setScanning(false);
-      }
-    }, 3000);
-  }
-
-  function stopPolling() {
-    if (pollRef.current) {
-      window.clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }
-
-  useEffect(() => {
-    return stopPolling;
-  }, []);
 
   const selectedWebsite = websites.find((w) => w.id === websiteId);
   const websiteScans = websiteId

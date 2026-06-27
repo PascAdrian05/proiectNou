@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { alertsService } from "../services/api/alertsService";
-import { createEventSource } from "../services/api/eventStream";
+import { openAuthenticatedEventSource } from "../services/api/eventStream";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import { appConfig } from "../config/appConfig";
@@ -43,31 +43,43 @@ export function AlertsPage() {
   }, []);
 
   useEffect(() => {
-    const session = localStorage.getItem("authSession");
-    const parsedSession = session ? JSON.parse(session) : null;
-    const source = createEventSource(`/api/v1/events/alerts/stream`, {
-      session: parsedSession,
-    });
+    let source = null;
+    let cancelled = false;
 
-    source.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      if (payload?.alerts) {
-        setAlerts((current) => {
-          const updated = new Map(current.map((alert) => [alert.id, alert]));
-          for (const remote of payload.alerts) {
-            updated.set(remote.id, { ...updated.get(remote.id), ...remote });
+    (async () => {
+      try {
+        source = await openAuthenticatedEventSource("alerts");
+        if (cancelled) {
+          source.close();
+          return;
+        }
+
+        source.onmessage = (event) => {
+          const payload = JSON.parse(event.data);
+          if (payload?.alerts) {
+            setAlerts((current) => {
+              const updated = new Map(current.map((alert) => [alert.id, alert]));
+              for (const remote of payload.alerts) {
+                updated.set(remote.id, { ...updated.get(remote.id), ...remote });
+              }
+              return Array.from(updated.values());
+            });
           }
-          return Array.from(updated.values());
-        });
-      }
-    };
+        };
 
-    source.onerror = () => {
-      source.close();
-    };
+        source.onerror = () => {
+          source.close();
+        };
+      } catch {
+        // Stream initialisation failed - alerts will still load via the REST call above.
+      }
+    })();
 
     return () => {
-      source.close();
+      cancelled = true;
+      if (source) {
+        source.close();
+      }
     };
   }, []);
 

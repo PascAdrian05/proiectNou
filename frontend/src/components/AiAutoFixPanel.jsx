@@ -1,10 +1,16 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
+import { toast } from "react-hot-toast";
 import { aiService } from "../services/api/aiService";
 import { findingsService } from "../services/api/findingsService";
 
 function FixApplyAnimation({ onComplete }) {
+  // useEffect — NOT useState — for the side effect of driving the step
+  // animation. Using useState with an async function runs once per render,
+  // leaking cancelled-but-still-running intervals into the next animation.
+  const cancelledRef = useRef(false);
   const [step, setStep] = useState(0);
+
   const steps = [
     "Connecting to server...",
     "Applying configuration changes...",
@@ -12,26 +18,45 @@ function FixApplyAnimation({ onComplete }) {
     "Fix applied successfully!",
   ];
 
-  useState(() => {
-    let cancelled = false;
-    const run = async () => {
-      for (let i = 0; i < steps.length; i++) {
-        if (cancelled) break;
-        await new Promise((r) => setTimeout(r, 600));
-        if (!cancelled) setStep(i + 1);
+  useEffect(() => {
+    cancelledRef.current = false;
+    let timer;
+    let i = 0;
+
+    const tick = async () => {
+      if (cancelledRef.current) return;
+      await new Promise((r) => setTimeout(r, 600));
+      if (cancelledRef.current) return;
+      i += 1;
+      setStep(i);
+      if (i < steps.length) {
+        timer = setTimeout(tick, 0);
+      } else {
+        timer = setTimeout(() => {
+          if (!cancelledRef.current) onComplete?.();
+        }, 800);
       }
-      if (!cancelled) setTimeout(onComplete, 800);
     };
-    run();
-    return () => { cancelled = true; };
-  });
+
+    tick();
+    return () => {
+      cancelledRef.current = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="fix-apply-animation">
       {steps.map((s, i) => (
-        <div key={i} className={`fix-apply-step ${i < step ? "fix-done" : i === step ? "fix-active" : "fix-pending"}`}>
+        <div
+          key={i}
+          className={`fix-apply-step ${
+            i < step ? "fix-done" : i === step ? "fix-active" : "fix-pending"
+          }`}
+        >
           <span className="fix-apply-icon">
-            {i < step ? "\u2713" : i === step ? "\u25B6" : "\u25CB"}
+            {i < step ? "✓" : i === step ? "▶" : "○"}
           </span>
           <span>{s}</span>
         </div>
@@ -46,6 +71,7 @@ export function AiAutoFixPanel({ findingId, finding, onClose, onResolved }) {
   const [applying, setApplying] = useState(false);
   const [resolved, setResolved] = useState(false);
   const [error, setError] = useState("");
+  const [copiedStep, setCopiedStep] = useState(null);
 
   async function generateFix() {
     setLoading(true);
@@ -64,24 +90,31 @@ export function AiAutoFixPanel({ findingId, finding, onClose, onResolved }) {
     }
   }
 
-  async function applyFix() {
-    setApplying(true);
-    setError("");
-  }
-
   function onApplyComplete() {
-    findingsService.resolve(findingId).then(() => {
-      setResolved(true);
-      setApplying(false);
-      if (onResolved) onResolved(findingId);
-    }).catch(() => {
-      setError("Could not mark finding as resolved");
-      setApplying(false);
-    });
+    // The backend has no "apply" endpoint — the fix is a remediation
+    // script the operator runs themselves. What we CAN do honestly is
+    // mark the finding as resolved once the user confirms they ran it.
+    findingsService
+      .resolve(findingId)
+      .then(() => {
+        setResolved(true);
+        toast.success("Finding marked as resolved.");
+        onResolved?.(findingId);
+      })
+      .catch((err) => {
+        setError(err.message || "Could not mark finding as resolved");
+      })
+      .finally(() => setApplying(false));
   }
 
-  async function copyCode(text) {
-    try { await navigator.clipboard.writeText(text); } catch {}
+  async function copyCode(text, index) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedStep(index);
+      setTimeout(() => setCopiedStep(null), 1500);
+    } catch {
+      toast.error("Could not copy to clipboard.");
+    }
   }
 
   const kind = finding?.kind || "unknown";
@@ -94,14 +127,22 @@ export function AiAutoFixPanel({ findingId, finding, onClose, onResolved }) {
         animate={{ opacity: 1, height: "auto" }}
       >
         <div className="ai-autofix-header">
-          <span className="ai-autofix-title" style={{ color: "var(--accent-2)" }}>{"\u2705"} Fixed</span>
-          <button type="button" className="ai-autofix-close" onClick={onClose}>&times;</button>
+          <span className="ai-autofix-title" style={{ color: "var(--accent-2)" }}>
+            {"✅"} Fixed
+          </span>
+          <button type="button" className="ai-autofix-close" onClick={onClose}>
+            &times;
+          </button>
         </div>
         <div className="ai-autofix-content" style={{ textAlign: "center", padding: "1.5rem" }}>
           <p style={{ fontSize: "1.1rem", fontWeight: 600, color: "var(--accent-2)" }}>
-            {"\u2705"} Finding resolved successfully!
+            {"✅"} Finding marked as resolved
           </p>
-          <p className="ai-hint">The <strong>{kind.replace(/_/g, " ")}</strong> issue has been marked as fixed.</p>
+          <p className="ai-hint">
+            You confirmed running the suggested fix for{" "}
+            <strong>{kind.replace(/_/g, " ")}</strong>. The next scan will
+            verify whether the issue is actually gone.
+          </p>
         </div>
       </motion.div>
     );
@@ -116,9 +157,11 @@ export function AiAutoFixPanel({ findingId, finding, onClose, onResolved }) {
     >
       <div className="ai-autofix-header">
         <span className="ai-autofix-title">
-          <span className="ai-autofix-icon">{"\u2728"}</span> AI Auto-Fix Agent
+          <span className="ai-autofix-icon">{"✨"}</span> AI Auto-Fix
         </span>
-        <button type="button" className="ai-autofix-close" onClick={onClose}>&times;</button>
+        <button type="button" className="ai-autofix-close" onClick={onClose}>
+          &times;
+        </button>
       </div>
 
       {!fix && !loading && !error && !applying && (
@@ -126,15 +169,16 @@ export function AiAutoFixPanel({ findingId, finding, onClose, onResolved }) {
           <div className="ai-autofix-cause-preview">
             <div className="ai-cause-header">
               <span className="ai-cause-icon">{"\u{1F50D}"}</span>
-              <span>Root cause analysis &amp; auto-fix</span>
+              <span>Root cause analysis &amp; remediation</span>
             </div>
             <p className="ai-cause-explanation">
-              The AI will analyze the <strong>{kind.replace(/_/g, " ")}</strong> issue, identify the root cause,
-              generate the fix, and apply it directly.
+              The AI will analyze the <strong>{kind.replace(/_/g, " ")}</strong>
+              {" "}issue and propose a concrete remediation you can review,
+              copy, and run yourself on the affected server.
             </p>
           </div>
           <button type="button" className="ai-autofix-generate" onClick={generateFix}>
-            {"\u2699\uFE0F"} Analyze &amp; Generate Fix
+            {"⚙️"} Analyze &amp; Generate Fix
           </button>
         </div>
       )}
@@ -181,10 +225,14 @@ export function AiAutoFixPanel({ findingId, finding, onClose, onResolved }) {
                 {(fix.risk_level || "medium").toUpperCase()} Risk
               </span>
               {fix.estimated_effort && (
-                <span className="ai-autofix-effort">{"\u23F1\uFE0F"} ~{fix.estimated_effort} min</span>
+                <span className="ai-autofix-effort">
+                  {"⏱️"} ~{fix.estimated_effort} min
+                </span>
               )}
               {fix.fix_type && (
-                <span className="ai-autofix-type">{"\u{1F527}"} {fix.fix_type.replace(/_/g, " ")}</span>
+                <span className="ai-autofix-type">
+                  {"\u{1F527}"} {fix.fix_type.replace(/_/g, " ")}
+                </span>
               )}
             </div>
           </div>
@@ -195,7 +243,7 @@ export function AiAutoFixPanel({ findingId, finding, onClose, onResolved }) {
               <strong>Step-by-Step Fix</strong>
             </div>
             <div className="ai-autofix-steps">
-              {fix.steps?.map((step, i) => (
+              {(fix.steps || []).map((step, i) => (
                 <div key={i} className="ai-autofix-step">
                   <span className="step-num">{i + 1}</span>
                   <div>
@@ -203,7 +251,13 @@ export function AiAutoFixPanel({ findingId, finding, onClose, onResolved }) {
                     {step.command_or_code && (
                       <div className="ai-autofix-code">
                         <pre><code>{step.command_or_code}</code></pre>
-                        <button type="button" className="copy-btn" onClick={() => copyCode(step.command_or_code)}>Copy</button>
+                        <button
+                          type="button"
+                          className="copy-btn"
+                          onClick={() => copyCode(step.command_or_code, i)}
+                        >
+                          {copiedStep === i ? "Copied" : "Copy"}
+                        </button>
                       </div>
                     )}
                   </div>
@@ -219,9 +273,19 @@ export function AiAutoFixPanel({ findingId, finding, onClose, onResolved }) {
             </details>
           )}
 
+          <p className="ai-hint" style={{ marginTop: "0.75rem" }}>
+            These commands run on your server. Guardian cannot apply them
+            remotely. Once you&rsquo;ve run them, mark the finding resolved.
+          </p>
+
           <div className="ai-autofix-apply">
-            <button type="button" className="ai-autofix-apply-btn" onClick={applyFix}>
-              {"\u26A1"} Apply Fix &amp; Resolve
+            <button
+              type="button"
+              className="ai-autofix-apply-btn"
+              onClick={() => setApplying(true)}
+              disabled={applying}
+            >
+              {"✅"} I ran the fix — mark as resolved
             </button>
           </div>
         </div>
@@ -229,3 +293,5 @@ export function AiAutoFixPanel({ findingId, finding, onClose, onResolved }) {
     </motion.div>
   );
 }
+
+export default AiAutoFixPanel;

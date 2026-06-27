@@ -1,5 +1,4 @@
 from uuid import uuid4
-from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -7,7 +6,7 @@ from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.core.database import engine
-from app.core.security import create_access_token, get_password_hash
+from app.core.security import create_access_token, create_refresh_token, get_password_hash
 from app.models.oauth_account import OAuthAccount
 from app.models.subscription import Subscription
 from app.models.tenant import Tenant
@@ -97,7 +96,34 @@ async def oauth_callback(provider: str, request: Request):
 		session.refresh(user)
 
 	jwt_token = create_access_token(subject=str(user.id), tenant_id=str(user.tenant_id), role=user.role)
+	refresh_token = create_refresh_token(subject=str(user.id), tenant_id=str(user.tenant_id), role=user.role)
 	request.session["oauth_token"] = jwt_token
+	request.session["oauth_refresh_token"] = refresh_token
 	request.session["oauth_tenant_id"] = str(user.tenant_id)
 	redirect_target = f"{settings.frontend_url}/?oauth=success"
 	return RedirectResponse(url=redirect_target, status_code=302)
+
+
+@router.post("/complete")
+async def oauth_complete(request: Request):
+	"""Exchange OAuth session tokens for an access+refresh token pair.
+
+	After the provider redirects the browser back to ``/oauth/{provider}/callback``,
+	the tokens are stored server-side in the user's Starlette session cookie
+	(because URL fragments cannot carry secrets). The SPA then POSTs to this
+	endpoint and we return the tokens in JSON so the client can persist them
+	in localStorage and proceed with normal authenticated requests.
+	"""
+	access = request.session.pop("oauth_token", None)
+	refresh = request.session.pop("oauth_refresh_token", None)
+	tenant_id = request.session.pop("oauth_tenant_id", None)
+
+	if not access or not refresh:
+		raise HTTPException(status_code=400, detail="No OAuth session in progress")
+
+	return {
+		"access_token": access,
+		"refresh_token": refresh,
+		"tenant_id": tenant_id,
+		"token_type": "bearer",
+	}

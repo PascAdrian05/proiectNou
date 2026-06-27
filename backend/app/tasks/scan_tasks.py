@@ -1,4 +1,5 @@
 import json
+import logging
 import smtplib
 import socket
 import ssl
@@ -20,6 +21,9 @@ from app.models.scan_run import ScanRun
 from app.models.tenant import Tenant
 from app.models.website import Website
 from app.tasks.celery_app import celery_app
+
+
+logger = logging.getLogger(__name__)
 
 
 SECURITY_HEADERS = [
@@ -178,8 +182,34 @@ def _needs_finding(kind: str, data: dict[str, Any]) -> bool:
     return False
 
 
-def _send_webhook(url: str, payload: dict[str, Any]) -> None:
-    httpx.post(url, json=payload, timeout=10.0)
+def _send_webhook(url: str, payload: dict[str, Any]) -> bool:
+    """POST a finding payload to the tenant's webhook URL.
+
+    Returns True on a 2xx response. Anything else (4xx, 5xx, network error)
+    is logged and surfaces to the caller as a failed delivery — the previous
+    implementation always marked the alert ``sent`` regardless of the
+    response code.
+    """
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.post(url, json=payload)
+    except httpx.HTTPError as exc:
+        logger.warning("webhook delivery failed for %s: %s", url, exc)
+        raise
+
+    if response.status_code >= 400:
+        snippet = response.text[:200] if response.text else ""
+        logger.warning(
+            "webhook returned non-2xx status=%s url=%s body=%s",
+            response.status_code,
+            url,
+            snippet,
+        )
+        raise RuntimeError(
+            f"webhook responded {response.status_code}: {snippet or 'no body'}"
+        )
+
+    return True
 
 
 def _send_email(to_email: str, subject: str, body: str) -> None:
@@ -197,6 +227,24 @@ def _send_email(to_email: str, subject: str, body: str) -> None:
 
 
 def _dispatch_alerts(session: Session, tenant: Tenant, findings_created: list[dict]) -> None:
+    """Send webhook + email alerts for each newly created finding.
+
+    Each channel is isolated: a failure on one channel (or one finding) does
+    not abort the rest. Alerts are persisted with their terminal status
+    (``sent`` / ``failed``) and error message so the UI can show the user
+    exactly which delivery needs attention. We commit per-finding so a bad
+    row doesn't poison the rest of the batch.
+    """
+    if not findings_created:
+        return
+
+    webhook_payload_template = lambda f: {  # noqa: E731
+        "tenant_id": str(tenant.id),
+        "severity": f["severity"],
+        "kind": f["kind"],
+        "details": f["data"],
+    }
+
     for finding in findings_created:
         if tenant.alert_webhook_url:
             alert = Alert(
@@ -206,23 +254,25 @@ def _dispatch_alerts(session: Session, tenant: Tenant, findings_created: list[di
                 recipient=tenant.alert_webhook_url,
             )
             session.add(alert)
-            session.flush()
             try:
+                session.flush()
                 _send_webhook(
                     tenant.alert_webhook_url,
-                    {
-                        "tenant_id": str(tenant.id),
-                        "severity": finding["severity"],
-                        "kind": finding["kind"],
-                        "details": finding["data"],
-                    },
+                    webhook_payload_template(finding),
                 )
                 alert.status = "sent"
                 alert.sent_at = datetime.now(timezone.utc)
             except Exception as exc:
+                logger.warning(
+                    "webhook dispatch failed tenant=%s finding=%s: %s",
+                    tenant.id,
+                    finding["id"],
+                    exc,
+                )
                 alert.status = "failed"
-                alert.error_message = str(exc)
+                alert.error_message = str(exc)[:500]
             session.add(alert)
+
         if tenant.alert_email:
             alert = Alert(
                 tenant_id=tenant.id,
@@ -231,19 +281,37 @@ def _dispatch_alerts(session: Session, tenant: Tenant, findings_created: list[di
                 recipient=tenant.alert_email,
             )
             session.add(alert)
-            session.flush()
             try:
+                session.flush()
                 _send_email(
                     tenant.alert_email,
                     "Security finding detected",
-                    f"Issue kind: {finding['kind']}\nSeverity: {finding['severity']}\nDetails: {finding['data']}",
+                    (
+                        f"Issue kind: {finding['kind']}\n"
+                        f"Severity: {finding['severity']}\n"
+                        f"Details: {finding['data']}"
+                    ),
                 )
                 alert.status = "sent"
                 alert.sent_at = datetime.now(timezone.utc)
             except Exception as exc:
+                logger.warning(
+                    "email dispatch failed tenant=%s finding=%s: %s",
+                    tenant.id,
+                    finding["id"],
+                    exc,
+                )
                 alert.status = "failed"
-                alert.error_message = str(exc)
+                alert.error_message = str(exc)[:500]
             session.add(alert)
+
+        # Commit per-finding so a single bad channel doesn't poison the rest
+        # of the batch (and so progress is durable if the worker crashes).
+        try:
+            session.commit()
+        except Exception:
+            logger.exception("failed to persist alerts for finding=%s", finding["id"])
+            session.rollback()
 
 
 @celery_app.task(name="scan.run_full_scan", bind=True, max_retries=2, default_retry_delay=30)
@@ -266,6 +334,10 @@ def run_full_scan(
         tenant = session.get(Tenant, tenant_uuid)
         if not scan_run or not website or not tenant:
             return {"status": "failed", "reason": "scan context not found"}
+
+        # Extract website URL and domain for use in checks
+        website_url = website.url
+        website_domain = website.domain
 
         _update_progress(
             session,
@@ -307,9 +379,9 @@ def run_full_scan(
             )
 
             if step_name == "uptime":
-                result = _perform_uptime_check(url)
+                result = _perform_uptime_check(website_url)
             elif step_name == "ssl_expiry":
-                result = _perform_ssl_check(domain)
+                result = _perform_ssl_check(website_domain)
                 if not result.get("valid") and isinstance(result.get("error"), str):
                     err_lower = result["error"].lower()
                     if any(
@@ -325,9 +397,18 @@ def run_full_scan(
                     ):
                         result["no_access"] = True
             elif step_name == "security_headers":
-                result = _perform_headers_check(headers_from_uptime)
+                if not headers_from_uptime:
+                    # No headers available from uptime check (likely unreachable)
+                    result = {
+                        "error": "No headers available from uptime check",
+                        "no_access": True,
+                        "missing": list(SECURITY_HEADERS),
+                        "score": 0,
+                    }
+                else:
+                    result = _perform_headers_check(headers_from_uptime)
             elif step_name == "open_ports":
-                result = _perform_ports_check(domain)
+                result = _perform_ports_check(website_domain)
                 if not result.get("open_ports"):
                     result["no_access"] = True
             else:
@@ -440,12 +521,22 @@ def run_full_scan(
             session.add(website)
             session.commit()
 
-            _dispatch_alerts(session, tenant, findings_created)
-            session.commit()
+            # Dispatch alerts with isolated error handling — alert failures
+            # MUST NOT mark the scan itself as failed.
+            try:
+                _dispatch_alerts(session, tenant, findings_created)
+                session.commit()
+            except Exception:
+                logger.exception("alert dispatch crashed; scan results remain valid")
 
-            cache_delete_pattern(f"scanruns:{tenant_id}")
-            cache_delete_pattern(f"findings:{tenant_id}")
-            cache_delete_pattern(f"alerts:{tenant_id}")
+            # Best-effort cache invalidation. A Redis blip should not fail
+            # the scan; the next request will refresh naturally.
+            try:
+                cache_delete_pattern(f"scanruns:{tenant_id}")
+                cache_delete_pattern(f"findings:{tenant_id}")
+                cache_delete_pattern(f"alerts:{tenant_id}")
+            except Exception:
+                logger.warning("cache invalidation after scan failed", exc_info=True)
 
             _publish_event(
                 "scan:completed",
@@ -469,20 +560,27 @@ def run_full_scan(
                 run_post_scan_analysis.delay(str(scan_run_uuid), str(tenant_uuid))
             except Exception:
                 # If the AI worker is down the user still has a valid result.
-                pass
+                logger.warning("could not enqueue AI post-scan analysis", exc_info=True)
 
             return {"status": "completed", "findings_created": len(findings_created)}
 
     except Exception as exc:
-        with Session(engine) as session:
-            scan_run = session.get(ScanRun, scan_run_uuid)
-            if scan_run:
-                scan_run.status = "failed"
-                scan_run.completed_at = datetime.now(timezone.utc)
-                scan_run.error_message = str(exc)
-                scan_run.current_step = None
-                session.add(scan_run)
-                session.commit()
+        # Only DB-level / unexpected failures land here. Webhook, SMTP, cache
+        # and Redis hiccups are already caught above so they don't poison
+        # the scan result. Surface the real cause to the audit log + UI.
+        logger.exception("scan %s crashed", scan_run_uuid)
+        try:
+            with Session(engine) as session:
+                scan_run = session.get(ScanRun, scan_run_uuid)
+                if scan_run:
+                    scan_run.status = "failed"
+                    scan_run.completed_at = datetime.now(timezone.utc)
+                    scan_run.error_message = str(exc)[:1000]
+                    scan_run.current_step = None
+                    session.add(scan_run)
+                    session.commit()
+        except Exception:
+            logger.exception("failed to mark scan %s as failed", scan_run_uuid)
 
         _publish_event(
             "scan:completed",

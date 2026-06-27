@@ -1,8 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel
 import sqlalchemy as sa
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class OAuthAccount(SQLModel, table=True):
@@ -15,4 +19,4 @@ class OAuthAccount(SQLModel, table=True):
     provider: str = Field(index=True)
     provider_user_id: str = Field(index=True)
     email: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)

@@ -1,7 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Credential(SQLModel, table=True):
@@ -13,5 +17,5 @@ class Credential(SQLModel, table=True):
     sign_count: int = Field(default=0)
     transports: str | None = Field(default=None, nullable=True)  # JSON array
     device_name: str | None = Field(default=None, nullable=True)  # Friendly name
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
     last_used_at: datetime | None = Field(default=None, nullable=True)

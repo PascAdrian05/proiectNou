@@ -1,7 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, Index, SQLModel
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class AuditLog(SQLModel, table=True):
@@ -15,4 +19,10 @@ class AuditLog(SQLModel, table=True):
     user_agent: str | None = Field(default=None)
     success: bool = Field(default=True)
     details: str | None = Field(default=None)  # JSON string for additional context
-    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+    __table_args__ = (
+        # "Recent activity for tenant" — the default dashboard query.
+        Index("ix_audit_tenant_created", "tenant_id", "created_at"),
+        # "All actions by user" — the user-profile timeline.
+        Index("ix_audit_user_created", "user_id", "created_at"),
+    )

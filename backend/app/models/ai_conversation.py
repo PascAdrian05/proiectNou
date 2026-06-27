@@ -1,7 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class AIConversation(SQLModel, table=True):
@@ -12,5 +16,5 @@ class AIConversation(SQLModel, table=True):
     conversation_type: str = Field(index=True)  # e.g., "security_tips", "posture_verification", "finding_analysis"
     messages: str = Field(default="[]")  # JSON string of conversation messages
     context_data: str = Field(default="{}")  # JSON string of additional context
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)

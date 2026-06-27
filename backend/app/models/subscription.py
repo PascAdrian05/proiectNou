@@ -1,7 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlmodel import Field, SQLModel
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Subscription(SQLModel, table=True):
@@ -12,8 +16,8 @@ class Subscription(SQLModel, table=True):
     stripe_customer_id: str | None = Field(default=None, index=True)
     stripe_subscription_id: str | None = Field(default=None, index=True)
     current_period_end: datetime | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    
+    created_at: datetime = Field(default_factory=_utcnow)
+
     # Scan limit tracking
     scans_used: int = Field(default=0)
     scans_limit: int = Field(default=10)  # Free plan: 10 scans per day
