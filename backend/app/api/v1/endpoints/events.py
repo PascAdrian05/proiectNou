@@ -309,9 +309,8 @@ async def stream_updates(
         stop_event = threading.Event()
 
         listener_thread = threading.Thread(
-            target=lambda: asyncio.run(_redis_subscriber(event_queue, stop_event, tenant_id_str))
-            if False
-            else _run_subscriber_in_loop(event_queue, stop_event, tenant_id_str),
+            target=_run_subscriber_in_loop,
+            args=(event_queue, stop_event, tenant_id_str),
             daemon=True,
         )
         listener_thread.start()
